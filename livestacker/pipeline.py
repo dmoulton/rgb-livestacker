@@ -17,6 +17,7 @@ import astroalign as aa
 from PIL import Image
 
 from .accumulator import ChannelStack
+from .calibration import Calibrator
 from .config import StackConfig, StretchParams
 from .fitsframe import Frame
 from .processing import apply_stretch, auto_stretch, combine_rgb
@@ -39,8 +40,9 @@ class IngestResult:
 
 
 class Pipeline:
-    def __init__(self, cfg: StackConfig):
+    def __init__(self, cfg: StackConfig, calibrator: Calibrator | None = None):
         self.cfg = cfg
+        self.calibrator = calibrator
         self.channels: dict[str, ChannelStack] = {}
         self.reference: np.ndarray | None = None
         self.reference_filter: str = ""
@@ -56,16 +58,18 @@ class Pipeline:
     def ingest(self, frame: Frame) -> IngestResult:
         ch = self.channels.setdefault(frame.filter, ChannelStack(frame.filter))
 
+        data = self.calibrator.apply(frame) if self.calibrator else frame.data
+
         if self.reference is None:
-            self.reference = frame.data.copy()
+            self.reference = data.copy()
             self.reference_filter = frame.filter
             self.reference_path = frame.path.name
-            aligned, valid = frame.data, np.ones(frame.data.shape, bool)
+            aligned, valid = data, np.ones(data.shape, bool)
             log.info("reference set from %s (%s)", frame.path.name, frame.filter)
         else:
             try:
                 aligned, _footprint = aa.register(
-                    frame.data, self.reference, fill_value=np.nan,
+                    data, self.reference, fill_value=np.nan,
                     detection_sigma=5,
                 )
             except Exception as exc:  # too few stars, no transform, etc.
@@ -144,10 +148,16 @@ class Pipeline:
             for name, st in sorted(self.channels.items())
         }
         total = sum(st.frames for st in self.channels.values())
+        dark = (self.calibrator.master_dark.source
+                if self.calibrator and self.calibrator.master_dark else None)
         return {
             "type": "status",
             "reference": self.reference_path,
             "reference_filter": self.reference_filter,
+            "calibration": {
+                "hot_pixel": self.cfg.hot_pixel_enabled,
+                "dark": dark,
+            },
             "channels": chans,
             "total_frames": total,
             "rejected": self.rejected,

@@ -11,6 +11,7 @@ import asyncio
 import logging
 import sys
 
+from .calibration import Calibrator, MasterDark
 from .config import StackConfig
 from .server import LiveStacker
 from .source import ReplaySource, WatchSource
@@ -34,6 +35,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="bind address (default: 127.0.0.1; use 0.0.0.0 for LAN)")
     p.add_argument("--web-port", type=int, default=8080)
     p.add_argument("--ws-port", type=int, default=8081)
+
+    p.add_argument("--dark", metavar="PATH",
+                   help="master dark: a FITS file, or a folder of dark subs to "
+                        "median-combine")
+    p.add_argument("--no-hot-pixel", action="store_true",
+                   help="disable per-frame hot/cold pixel correction")
+    p.add_argument("--hot-pixel-sigma", type=float, default=8.0,
+                   help="hot-pixel detection threshold in robust sigma (default: 8)")
 
     p.add_argument("--no-background", action="store_true",
                    help="disable background/gradient subtraction")
@@ -63,9 +72,20 @@ def main(argv: list[str] | None = None) -> int:
         auto_white_balance=not args.no_auto_wb,
         background_sigma=args.background_sigma,
         preview_max_px=args.preview_px,
+        hot_pixel_enabled=not args.no_hot_pixel,
+        hot_pixel_sigma=args.hot_pixel_sigma,
     )
 
-    stacker = LiveStacker(cfg, args.host, args.ws_port, args.web_port)
+    master_dark = None
+    if args.dark:
+        try:
+            master_dark = MasterDark.build(args.dark)
+        except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+            print(f"error: --dark {exc}", file=sys.stderr)
+            return 2
+    calibrator = Calibrator(cfg, master_dark)
+
+    stacker = LiveStacker(cfg, args.host, args.ws_port, args.web_port, calibrator)
 
     if args.watch:
         source = WatchSource(args.watch, stacker.submit_file)

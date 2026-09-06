@@ -19,6 +19,9 @@ class Frame:
     data: np.ndarray     # float32, shape (H, W)
     date_obs: str        # DATE-OBS string, or "" if absent
     exptime: float       # seconds
+    gain: float | None = None
+    xbinning: int | None = None
+    ccd_temp: float | None = None
 
 
 # Map common filter-name spellings onto single-letter RGB channels. Anything
@@ -51,10 +54,20 @@ def load_frame(path: str | Path) -> Frame:
             raise ValueError(f"{path.name}: expected 2-D data, got {data.shape}")
         header = hdu.header
 
+    def _num(key):
+        try:
+            return float(header[key])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    binning = _num("XBINNING")
     return Frame(
         path=path,
         filter=normalise_filter(header.get("FILTER")),
         data=data,
         date_obs=str(header.get("DATE-OBS", "")),
         exptime=float(header.get("EXPTIME", header.get("EXPOSURE", 0.0)) or 0.0),
+        gain=_num("GAIN"),
+        xbinning=int(binning) if binning is not None else None,
+        ccd_temp=_num("CCD-TEMP"),
     )

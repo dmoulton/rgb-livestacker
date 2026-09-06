@@ -23,6 +23,7 @@ from pathlib import Path
 
 import websockets
 
+from .calibration import Calibrator
 from .config import StackConfig, StretchParams
 from .fitsframe import load_frame
 from .pipeline import Pipeline
@@ -33,13 +34,14 @@ WEB_ROOT = Path(__file__).resolve().parent / "web"
 
 
 class LiveStacker:
-    def __init__(self, cfg: StackConfig, host: str, ws_port: int, web_port: int):
+    def __init__(self, cfg: StackConfig, host: str, ws_port: int, web_port: int,
+                 calibrator: Calibrator | None = None):
         self.cfg = cfg
         self.host = host
         self.ws_port = ws_port
         self.web_port = web_port
 
-        self.pipeline = Pipeline(cfg)
+        self.pipeline = Pipeline(cfg, calibrator)
         self.params = StretchParams()
         self._jobs: "queue.Queue[tuple[str, object]]" = queue.Queue()
         self._clients: set = set()

@@ -98,6 +98,8 @@
       <tr><td>Total frames</td><td id="total">0</td></tr>
       <tr><td>Rejected</td><td id="rejected">0</td></tr>
       <tr><td>Elapsed</td><td id="elapsed">0 s</td></tr>
+      <tr><td>Hot-pixel fix</td><td id="cal-hot">–</td></tr>
+      <tr><td>Master dark</td><td id="cal-dark">–</td></tr>
     </table>
 
     <div id="conn" class="down">connecting…</div>
@@ -159,6 +161,11 @@ function renderStatus(s) {
   $("total").textContent = s.total_frames;
   $("rejected").textContent = s.rejected;
   $("elapsed").textContent = `${s.elapsed} s`;
+  if (s.calibration) {
+    $("cal-hot").textContent = s.calibration.hot_pixel ? "on" : "off";
+    $("cal-dark").textContent = s.calibration.dark
+      ? s.calibration.dark.replace(/^.*\//, "") : "none";
+  }
 
   const body = $("channels").querySelector("tbody");
   body.innerHTML = "";

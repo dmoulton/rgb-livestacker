@@ -25,6 +25,11 @@ class StackConfig:
     background_enabled: bool = True
     # Automatic per-channel white balance (match bright-star levels).
     auto_white_balance: bool = True
+    # Per-frame hot/cold pixel cosmetic correction (no calibration frames
+    # needed; this is what stops un-dark-subtracted hot pixels from smearing
+    # into "walking noise" as the mount dithers).
+    hot_pixel_enabled: bool = True
+    hot_pixel_sigma: float = 8.0
     # Longest preview edge pushed over the socket, in pixels. Full-res stays
     # available through the /snapshot endpoint.
     preview_max_px: int = 1600
