@@ -120,6 +120,10 @@
       <label for="contrast">Contrast <span id="contrast-v">1.00</span></label>
       <input type="range" id="contrast" min="0.5" max="2" step="0.01" value="1">
     </div>
+    <div class="ctl">
+      <label for="green">Green noise (SCNR) <span id="green-v">0.00</span></label>
+      <input type="range" id="green" min="0" max="1" step="0.02" value="0">
+    </div>
     <a class="btn" id="save" href="/snapshot.png" download="livestack.png">Save full-res PNG</a>
 
     <h2>Channels</h2>
@@ -144,7 +148,7 @@
 <script>
 const WS_PORT = "{{WS_PORT}}";
 const $ = (id) => document.getElementById(id);
-const sliders = ["black", "midtones", "gamma", "contrast"];
+const sliders = ["black", "midtones", "gamma", "contrast", "green"];
 let ws, reconnectTimer, lastUrl;
 
 function currentParams() {
@@ -155,6 +159,7 @@ function currentParams() {
     midtones: parseFloat($("midtones").value),
     gamma: parseFloat($("gamma").value),
     contrast: parseFloat($("contrast").value),
+    green: parseFloat($("green").value),
   };
 }
 
@@ -171,6 +176,7 @@ function reflectValues() {
   $("midtones-v").textContent = (+$("midtones").value).toFixed(3);
   $("gamma-v").textContent = (+$("gamma").value).toFixed(2);
   $("contrast-v").textContent = (+$("contrast").value).toFixed(2);
+  $("green-v").textContent = (+$("green").value).toFixed(2);
   const dim = $("auto").checked;
   $("black").disabled = dim;
   $("midtones").disabled = dim;
@@ -188,6 +194,7 @@ function applyServerParams(p) {
   if (p.midtones != null) $("midtones").value = p.midtones;
   if (p.gamma != null) $("gamma").value = p.gamma;
   if (p.contrast != null) $("contrast").value = p.contrast;
+  if (p.green != null) $("green").value = p.green;
   reflectValues();
 }
 

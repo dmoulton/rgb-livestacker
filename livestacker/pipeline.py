@@ -123,6 +123,7 @@ class Pipeline:
             merged = StretchParams(**self._auto_params.to_json())
             merged.gamma = params.gamma
             merged.contrast = params.contrast
+            merged.green = params.green
             return merged
         return params
 

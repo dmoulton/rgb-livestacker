@@ -290,8 +290,18 @@ def auto_stretch(rgb: np.ndarray, target_bg: float = 0.20) -> StretchParams:
                          contrast=1.0, auto=True)
 
 
+def _scnr_green(x: np.ndarray, amount: float) -> np.ndarray:
+    """Subtractive green-noise removal (SCNR, average-neutral). There are almost
+    no truly green astronomical objects, so a green pixel above the R/B average
+    is noise / a walking-colour artefact — pull it back toward that average."""
+    g = x[..., 1]
+    cap = 0.5 * (x[..., 0] + x[..., 2])
+    x[..., 1] = g + amount * (np.minimum(g, cap) - g)
+    return x
+
+
 def apply_stretch(rgb: np.ndarray, p: StretchParams) -> np.ndarray:
-    """Linked black/midtones/gamma/contrast -> uint8 (H, W, 3)."""
+    """Linked black/midtones/gamma/contrast (+ optional SCNR) -> uint8 (H,W,3)."""
     x = (rgb - p.black) / max(1.0 - p.black, 1e-6)
     x = np.clip(x, 0.0, 1.0)
     x = _mtf(x, p.midtones)
@@ -300,4 +310,6 @@ def apply_stretch(rgb: np.ndarray, p: StretchParams) -> np.ndarray:
     if abs(p.contrast - 1.0) > 1e-3:
         x = (x - 0.5) * p.contrast + 0.5
     x = np.clip(x, 0.0, 1.0)
+    if p.green > 1e-3:
+        x = _scnr_green(x, min(p.green, 1.0))
     return (x * 255.0 + 0.5).astype(np.uint8)

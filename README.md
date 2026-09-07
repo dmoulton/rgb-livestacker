@@ -104,7 +104,8 @@ command. (`--watch` recurses, so point it at NINA's image root.)
    matching when too few stars are found.
 8. **Combine** to linear RGB.
 9. **Linked stretch**: one black/midtones/gamma/contrast curve through all
-   three channels, applied live in the browser without re-stacking.
+   three channels, plus an optional green-noise (SCNR) slider, applied live in
+   the browser without re-stacking.
 
 ## Tests
 
