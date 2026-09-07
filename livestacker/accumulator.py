@@ -24,6 +24,7 @@ class ChannelStack:
         self.name = name
         self.cfg = cfg or StackConfig()
         self._count: np.ndarray | None = None   # accepted samples per pixel
+        self._seen: np.ndarray | None = None    # frames that landed on the pixel
         self._mean: np.ndarray | None = None    # running mean (Welford)
         self._m2: np.ndarray | None = None      # running sum of sq. deviations
         self.frames = 0                          # frames offered to this channel
@@ -38,8 +39,10 @@ class ChannelStack:
 
         if self._count is None:
             self._count = np.zeros(aligned.shape, dtype=np.int32)
+            self._seen = np.zeros(aligned.shape, dtype=np.int32)
             self._mean = np.zeros(aligned.shape, dtype=np.float32)
             self._m2 = np.zeros(aligned.shape, dtype=np.float32)
+        self._seen += valid
 
         accept = valid.copy()
         cfg = self.cfg
@@ -84,18 +87,20 @@ class ChannelStack:
 
     @property
     def coverage(self) -> np.ndarray | None:
-        """Boolean mask: pixels that received at least one accepted sample."""
-        if self._count is None:
+        """Boolean mask: pixels at least one frame landed on."""
+        if self._seen is None:
             return None
-        return self._count > 0
+        return self._seen > 0
 
     def covered_mask(self, min_frac: float) -> np.ndarray | None:
-        """Boolean mask: pixels covered by at least `min_frac` of this channel's
-        frames (always at least one). Excludes the under-sampled dither fringe."""
-        if self._count is None:
+        """Boolean mask: pixels that at least `min_frac` of this channel's
+        frames *landed on* — this counts frame footprint, not sigma-clip
+        acceptance, so a noisy pixel whose samples keep getting rejected is
+        still 'covered'. Excludes only the under-sampled dither fringe."""
+        if self._seen is None:
             return None
         need = max(1, int(round(min_frac * self.frames)))
-        return self._count >= need
+        return self._seen >= need
 
     @property
     def mean(self) -> np.ndarray | None:
