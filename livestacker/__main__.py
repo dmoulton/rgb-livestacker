@@ -11,7 +11,7 @@ import asyncio
 import logging
 import sys
 
-from .calibration import Calibrator, MasterDark
+from .calibration import Calibrator, MasterDark, build_flats
 from .config import StackConfig
 from .server import LiveStacker
 from .source import ReplaySource, WatchSource
@@ -39,6 +39,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dark", metavar="PATH",
                    help="master dark: a FITS file, or a folder of dark subs to "
                         "median-combine")
+    p.add_argument("--flat", metavar="PATH",
+                   help="master flat(s): a FITS file, or a folder of raw flats "
+                        "(grouped by FILTER, one master per filter)")
     p.add_argument("--no-hot-pixel", action="store_true",
                    help="disable per-frame hot/cold pixel correction")
     p.add_argument("--hot-pixel-sigma", type=float, default=8.0,
@@ -48,7 +51,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="disable background/gradient subtraction")
     p.add_argument("--no-auto-wb", action="store_true",
                    help="disable automatic per-channel white balance")
-    p.add_argument("--background-sigma", type=float, default=60.0)
+    p.add_argument("--background-box", type=int, default=128,
+                   help="background mesh box size in px (default: 128)")
     p.add_argument("--preview-px", type=int, default=1600,
                    help="longest preview edge sent to the browser")
 
@@ -70,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = StackConfig(
         background_enabled=not args.no_background,
         auto_white_balance=not args.no_auto_wb,
-        background_sigma=args.background_sigma,
+        background_box=args.background_box,
         preview_max_px=args.preview_px,
         hot_pixel_enabled=not args.no_hot_pixel,
         hot_pixel_sigma=args.hot_pixel_sigma,
@@ -83,7 +87,16 @@ def main(argv: list[str] | None = None) -> int:
         except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
             print(f"error: --dark {exc}", file=sys.stderr)
             return 2
-    calibrator = Calibrator(cfg, master_dark)
+
+    flats = None
+    if args.flat:
+        try:
+            flats = build_flats(args.flat)
+        except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+            print(f"error: --flat {exc}", file=sys.stderr)
+            return 2
+
+    calibrator = Calibrator(cfg, master_dark, flats)
 
     stacker = LiveStacker(cfg, args.host, args.ws_port, args.web_port, calibrator)
 

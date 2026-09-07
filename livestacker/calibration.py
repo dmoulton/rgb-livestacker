@@ -1,13 +1,15 @@
-"""Frame calibration: optional master-dark subtraction + hot-pixel cleanup.
+"""Frame calibration: master dark, flat field, and hot-pixel cleanup.
 
-The hot-pixel pass needs no calibration frames and is the thing that stops
-un-dark-subtracted hot pixels from smearing into "walking noise" as the mount
-dithers. Master-dark subtraction is layered on top when a matching dark set is
-available.
+Order per light frame: subtract dark, divide by the (normalised) flat for that
+filter, then a per-frame hot/cold pixel cosmetic pass. The hot-pixel pass needs
+no calibration frames and is what stops un-dark-subtracted hot pixels from
+smearing into "walking noise" as the mount dithers; dark and flat are layered
+on when matching calibration sets are available.
 """
 
 from __future__ import annotations
 
+import collections
 import logging
 from pathlib import Path
 
@@ -98,6 +100,63 @@ class MasterDark:
         return data - self.data * scale
 
 
+class MasterFlat:
+    """A per-filter flat, normalised so its median is 1.0 — dividing a light by
+    it corrects vignetting and dust shadows without changing the signal scale.
+    """
+
+    def __init__(self, data: np.ndarray, meta: dict, source: str):
+        norm = float(np.median(data)) or 1.0
+        flat = (data / norm).astype(np.float32)
+        # guard against blow-ups where the flat is near zero (heavy vignette
+        # corners, dead pixels)
+        flat[flat < 0.2] = 1.0
+        self.data = flat
+        self.meta = meta
+        self.source = source
+
+    def warnings_for(self, frame: Frame) -> list[str]:
+        w: list[str] = []
+        if self.data.shape != frame.data.shape:
+            w.append(f"shape {self.data.shape} != light {frame.data.shape} "
+                     "-- flat will be skipped")
+            return w
+        fb, lb = self.meta["xbinning"], frame.xbinning
+        if fb is not None and lb is not None and fb != lb:
+            w.append(f"binning {fb} != light {lb}")
+        return w
+
+    def divide(self, data: np.ndarray, frame: Frame) -> np.ndarray:
+        if self.data.shape != data.shape:
+            return data
+        return data / self.data
+
+
+def build_flats(path: str | Path) -> dict[str, MasterFlat]:
+    """Build one `MasterFlat` per filter found under `path` (a single FITS file
+    or a folder of raw flats). Keyed by normalised filter name."""
+    path = Path(path)
+    if path.is_dir():
+        files = sorted(p for p in path.rglob("*") if p.suffix.lower() in FITS_SUFFIXES)
+        if not files:
+            raise FileNotFoundError(f"no FITS files under {path}")
+    else:
+        files = [path]
+
+    by_filter: dict[str, list[Frame]] = collections.defaultdict(list)
+    for f in files:
+        fr = load_frame(f)
+        by_filter[fr.filter].append(fr)
+
+    out: dict[str, MasterFlat] = {}
+    for filt, frames in by_filter.items():
+        data = np.median(np.stack([fr.data for fr in frames]), axis=0)
+        out[filt] = MasterFlat(data, _meta(frames[0]), f"{path} ({filt}, {len(frames)} frames)")
+        log.info("master flat [%s]: median of %d frames  %s",
+                 filt, len(frames), _describe(_meta(frames[0])))
+    return out
+
+
 def _meta(frame: Frame) -> dict:
     return {
         "exptime": frame.exptime,
@@ -115,14 +174,27 @@ def _describe(m: dict) -> str:
 class Calibrator:
     """Runs the enabled calibration steps on each incoming light frame."""
 
-    def __init__(self, cfg: StackConfig, master_dark: MasterDark | None = None):
+    def __init__(self, cfg: StackConfig, master_dark: MasterDark | None = None,
+                 flats: dict[str, MasterFlat] | None = None):
         self.cfg = cfg
         self.master_dark = master_dark
+        self.flats = flats or {}
         self._dark_warned = False
+        self._flat_warned: set[str] = set()
 
     @property
     def active(self) -> bool:
-        return self.master_dark is not None or self.cfg.hot_pixel_enabled
+        return (self.master_dark is not None or bool(self.flats)
+                or self.cfg.hot_pixel_enabled)
+
+    def _flat_for(self, frame: Frame) -> MasterFlat | None:
+        if not self.flats:
+            return None
+        if frame.filter in self.flats:
+            return self.flats[frame.filter]
+        if len(self.flats) == 1:
+            return next(iter(self.flats.values()))
+        return None
 
     def apply(self, frame: Frame) -> np.ndarray:
         data = frame.data
@@ -132,6 +204,19 @@ class Calibrator:
                     log.warning("master dark: %s", msg)
                 self._dark_warned = True
             data = self.master_dark.subtract(data, frame)
+
+        flat = self._flat_for(frame)
+        if flat is not None:
+            if frame.filter not in self._flat_warned:
+                for msg in flat.warnings_for(frame):
+                    log.warning("master flat [%s]: %s", frame.filter, msg)
+                self._flat_warned.add(frame.filter)
+            data = flat.divide(data, frame)
+        elif self.flats and frame.filter not in self._flat_warned:
+            log.warning("no master flat for filter %s (have: %s)",
+                        frame.filter, ", ".join(sorted(self.flats)))
+            self._flat_warned.add(frame.filter)
+
         if self.cfg.hot_pixel_enabled:
             data = cosmetic_correct(data, self.cfg.hot_pixel_sigma)
         return data

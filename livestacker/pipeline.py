@@ -20,7 +20,9 @@ from .accumulator import ChannelStack
 from .calibration import Calibrator
 from .config import StackConfig, StretchParams
 from .fitsframe import Frame
-from .processing import apply_stretch, auto_stretch, combine_rgb
+from .processing import (
+    BackgroundModeler, apply_stretch, auto_stretch, combine_rgb,
+)
 
 log = logging.getLogger("livestacker.pipeline")
 
@@ -49,6 +51,7 @@ class Pipeline:
         self.reference_path: str = ""
         self._linear_rgb: np.ndarray | None = None
         self._auto_params: StretchParams | None = None
+        self._bg_modeler = BackgroundModeler()
         self._lock = threading.Lock()
         self.started_at = time.time()
         self.rejected = 0
@@ -90,9 +93,9 @@ class Pipeline:
                             valid_fraction=float(valid.mean()))
 
     def _recombine(self) -> None:
-        data = {name: (st.mean, st.coverage)
+        data = {name: (st.mean, st.coverage, st.frames)
                 for name, st in self.channels.items()}
-        rgb = combine_rgb(data, self.cfg)
+        rgb = combine_rgb(data, self.cfg, self._bg_modeler)
         with self._lock:
             self._linear_rgb = rgb
             self._auto_params = auto_stretch(rgb) if rgb is not None else None
@@ -150,6 +153,8 @@ class Pipeline:
         total = sum(st.frames for st in self.channels.values())
         dark = (self.calibrator.master_dark.source
                 if self.calibrator and self.calibrator.master_dark else None)
+        flats = (sorted(self.calibrator.flats)
+                 if self.calibrator and self.calibrator.flats else [])
         return {
             "type": "status",
             "reference": self.reference_path,
@@ -157,6 +162,8 @@ class Pipeline:
             "calibration": {
                 "hot_pixel": self.cfg.hot_pixel_enabled,
                 "dark": dark,
+                "flats": flats,
+                "background": self.cfg.background_enabled,
             },
             "channels": chans,
             "total_frames": total,

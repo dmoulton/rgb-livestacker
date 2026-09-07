@@ -18,10 +18,23 @@ RGB_FILTERS = ("R", "G", "B")
 class StackConfig:
     # Minimum frames in a channel before its background model is trusted.
     min_subs_for_background: int = 3
-    # Gaussian sigma (px) for the blur-based background estimate. Large vs star
-    # size, small vs gradient scale.
-    background_sigma: float = 60.0
-    # Enable the cheap blur-subtract background removal.
+    # photutils Background2D: mesh box size (px) and the running-median filter
+    # applied to the low-res background mesh.
+    background_box: int = 128
+    background_filter: int = 3
+    # Shrink the common-coverage mask by this many px before estimating the
+    # background, so the ragged dither border never leaks into the model.
+    background_border_erode: int = 24
+    # Trim this many px off the common-coverage edge before cropping the
+    # preview, hiding the thin partial-coverage / amp-glow fringe.
+    display_border_erode: int = 10
+    # Re-estimate a channel's background model only once its frame count has
+    # advanced this far (the model changes slowly; the stretch does not).
+    background_every_n_frames: int = 3
+    # Bright-source rejection for the background estimate.
+    source_mask_nsigma: float = 2.5
+    source_mask_dilate: int = 8
+    # Enable background / gradient removal.
     background_enabled: bool = True
     # Automatic per-channel white balance (match bright-star levels).
     auto_white_balance: bool = True

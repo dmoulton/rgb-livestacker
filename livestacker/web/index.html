@@ -100,6 +100,8 @@
       <tr><td>Elapsed</td><td id="elapsed">0 s</td></tr>
       <tr><td>Hot-pixel fix</td><td id="cal-hot">–</td></tr>
       <tr><td>Master dark</td><td id="cal-dark">–</td></tr>
+      <tr><td>Flat field</td><td id="cal-flat">–</td></tr>
+      <tr><td>Background</td><td id="cal-bg">–</td></tr>
     </table>
 
     <div id="conn" class="down">connecting…</div>
@@ -162,9 +164,12 @@ function renderStatus(s) {
   $("rejected").textContent = s.rejected;
   $("elapsed").textContent = `${s.elapsed} s`;
   if (s.calibration) {
-    $("cal-hot").textContent = s.calibration.hot_pixel ? "on" : "off";
-    $("cal-dark").textContent = s.calibration.dark
-      ? s.calibration.dark.replace(/^.*\//, "") : "none";
+    const c = s.calibration;
+    $("cal-hot").textContent = c.hot_pixel ? "on" : "off";
+    $("cal-dark").textContent = c.dark ? c.dark.replace(/^.*\//, "") : "none";
+    $("cal-flat").textContent = (c.flats && c.flats.length)
+      ? c.flats.join(" ") : "none";
+    $("cal-bg").textContent = c.background ? "on" : "off";
   }
 
   const body = $("channels").querySelector("tbody");

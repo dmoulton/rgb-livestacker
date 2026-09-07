@@ -44,30 +44,38 @@ Then open <http://localhost:8080/>.
 | `--host 0.0.0.0` | expose to the LAN (default: localhost only) |
 | `--web-port` / `--ws-port` | ports (default 8080 / 8081) |
 | `--dark PATH` | master dark: a FITS file, or a folder of dark subs to median-combine |
+| `--flat PATH` | master flat(s): a FITS file, or a folder of raw flats (grouped by `FILTER`, one master per filter) |
 | `--no-hot-pixel` | disable per-frame hot/cold pixel correction (on by default) |
 | `--hot-pixel-sigma N` | hot-pixel detection threshold, robust sigma (default 8) |
 | `--no-background` | disable gradient/background subtraction |
 | `--no-auto-wb` | disable automatic per-channel white balance |
-| `--background-sigma N` | background blur radius in px (default 60) |
+| `--background-box N` | background mesh box size in px (default 128) |
 | `--preview-px N` | longest preview edge sent to the browser (default 1600) |
 | `-v` | verbose logging |
 
 ## How it works
 
 1. **Watch / replay** the folder; wait for each FITS file to finish writing.
-2. **Calibrate**: optional master-dark subtraction (`--dark`, validated against
-   the light's exposure / gain / binning / temperature, with warnings on a
-   mismatch), then a per-frame hot/cold pixel cosmetic correction — the latter
-   needs no calibration frames and is what stops hot pixels from smearing into
-   diagonal "walking noise" as the mount dithers.
+2. **Calibrate**, per light frame:
+   - master-dark subtraction (`--dark`), validated against the light's
+     exposure / gain / binning / temperature, with warnings on a mismatch;
+   - flat-field division (`--flat`), one master flat per `FILTER`, applied to
+     the matching channel (warns + skips on a shape mismatch);
+   - a per-frame hot/cold pixel cosmetic correction — needs no calibration
+     frames, and is what stops hot pixels from smearing into diagonal "walking
+     noise" as the mount dithers.
 3. **Route** by the `FILTER` header keyword into a per-channel accumulator.
 4. **Register** every frame — any filter — to the first frame received, with
    `astroalign` (triangle star matching, no plate solve). This is what keeps
    the independently-growing channel stacks from drifting apart.
 5. **Stack**: per-pixel running mean, tracking per-pixel coverage so
-   partially-overlapping (dithered / flipped) frames still contribute.
-6. **Background**: subtract a large-radius Gaussian blur per channel (gated on
-   a minimum sub count).
+   partially-overlapping (dithered / flipped) frames still contribute. The
+   combined result is cropped to the region every channel covers, so the
+   ragged dither border never appears.
+6. **Background**: a `photutils` `Background2D` surface per channel —
+   sigma-clipped per mesh cell, with bright sources and the frame border
+   masked out, so the nebula does not bias its own background. Gated on a
+   minimum sub count, cached and refreshed every few frames.
 7. **White balance**: one scalar per channel matching bright-star levels.
 8. **Combine** to linear RGB.
 9. **Linked stretch**: one black/midtones/gamma/contrast curve through all
@@ -75,7 +83,6 @@ Then open <http://localhost:8080/>.
 
 ## Status / roadmap
 
-Working first pass. Not yet done: rolling sigma-clip rejection, amp-glow /
-column-defect handling (a matched master dark is the real fix), `photutils`
-`Background2D`, star-flux-ratio white balance, LRGB (luminance) support,
-meridian-flip robustness, PyInstaller packaging.
+Working. Not yet done: rolling sigma-clip rejection, star-flux-ratio white
+balance, LRGB (luminance) support, meridian-flip robustness, PyInstaller
+packaging.
