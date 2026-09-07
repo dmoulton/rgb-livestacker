@@ -65,6 +65,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv:
+        # no arguments -> open the launcher window
+        from .launcher import run as run_launcher
+        return run_launcher()
+
     args = build_parser().parse_args(argv)
 
     logging.basicConfig(

@@ -37,8 +37,8 @@ if errorlevel 1 (
 )
 
 echo.
-echo Done. Start it with:
-echo   livestack.bat --watch  "C:\path\to\NINA\Images"      ^(live^)
-echo   livestack.bat --replay "C:\path\to\old\session"      ^(test on old data^)
-echo then open http://localhost:8080/
+echo Done. Double-click livestack.bat to open the launcher window,
+echo or run it with options:
+echo   livestack.bat --watch  "C:\path\to\NINA\Images"      ^(headless, live^)
+echo   livestack.bat --replay "C:\path\to\old\session"      ^(headless, test^)
 pause

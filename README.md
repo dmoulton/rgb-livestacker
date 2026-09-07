@@ -28,15 +28,17 @@ after pulling new code.
 
 ## Usage
 
-**macOS / Linux:**
+### Launcher window
+
+Double-click **`Livestacker.command`** (macOS) or **`livestack.bat`** (Windows)
+— pick the folder and options, press Start. Choices are remembered.
+
+### Command line
 
 ```bash
 ./livestack.sh --replay "/path/to/old/session"     # test on old data, no rig
 ./livestack.sh --watch  "/path/to/capture/folder"  # live
 ```
-
-**Windows:**
-
 ```bat
 livestack.bat --replay "C:\path\to\old\session"
 livestack.bat --watch  "C:\path\to\NINA\Images"

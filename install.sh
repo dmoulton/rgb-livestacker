@@ -31,8 +31,17 @@ export PIP_USER=0
 ./.venv/bin/python -m pip install --upgrade --quiet pip
 ./.venv/bin/python -m pip install --quiet -r requirements.txt
 
+if ! ./.venv/bin/python -c 'import tkinter' 2>/dev/null; then
+    echo
+    echo "note: Tk is missing, so the launcher window won't open."
+    echo "      macOS (Homebrew Python): brew install python-tk"
+    echo "      Debian/Ubuntu:           sudo apt install python3-tk"
+    echo "      The --watch / --replay command line still works without it."
+fi
+
 echo
-echo "Done. Start it with:"
-echo "  ./livestack.sh --watch  \"/path/to/capture/folder\"    # live"
-echo "  ./livestack.sh --replay \"/path/to/old/session\"        # test on old data"
-echo "then open http://localhost:8080/"
+echo "Done. Open the launcher by double-clicking Livestacker.command,"
+echo "or run it from the command line:"
+echo "  ./livestack.sh                                   # launcher window"
+echo "  ./livestack.sh --watch  \"/path/to/capture/folder\"   # headless, live"
+echo "  ./livestack.sh --replay \"/path/to/old/session\"      # headless, test"
