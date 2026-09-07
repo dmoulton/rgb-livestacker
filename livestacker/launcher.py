@@ -95,7 +95,11 @@ class Launcher:
         ttk.Label(frm, text="Calibration (optional)", font=("", 12, "bold")).grid(
             row=r, column=0, columnspan=3, sticky="w", pady=(0, 4)); r += 1
 
-        for key, label in (("dark", "Master dark"), ("flat", "Master flat")):
+        cal_rows = (
+            ("dark", "Master dark", "a folder of dark subs (any filters), or one master FITS"),
+            ("flat", "Master flat", "a folder of flat subs for every filter — sorted by FILTER, one master per channel"),
+        )
+        for key, label, hint in cal_rows:
             ttk.Label(frm, text=label).grid(row=r, column=0, sticky="w", **pad)
             ttk.Entry(frm, textvariable=self.v[key]).grid(row=r, column=1, sticky="ew", **pad)
             btns = ttk.Frame(frm)
@@ -107,8 +111,8 @@ class Launcher:
             ttk.Button(btns, text="✕", width=2,
                        command=lambda k=key: self.v[k].set("")).pack(side="left")
             r += 1
-        ttk.Label(frm, text="a folder of raw frames, or a single master FITS",
-                  foreground="#888").grid(row=r, column=1, sticky="w", padx=8); r += 1
+            ttk.Label(frm, text=hint, foreground="#888").grid(
+                row=r, column=1, columnspan=2, sticky="w", padx=8); r += 1
 
         ttk.Separator(frm, orient="horizontal").grid(
             row=r, column=0, columnspan=3, sticky="ew", pady=8); r += 1
