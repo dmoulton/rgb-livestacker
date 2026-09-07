@@ -18,13 +18,31 @@
   }
   #stage {
     flex: 1; display: flex; align-items: center; justify-content: center;
-    padding: 16px; min-width: 0;
+    padding: 16px; min-width: 0; position: relative; overflow: hidden;
   }
   #preview {
-    max-width: 100%; max-height: 100%; object-fit: contain;
+    max-width: 100%; max-height: 100%;
     background: #000; border: 1px solid var(--line); border-radius: 4px;
+    transform-origin: center center; will-change: transform;
+    user-select: none; -webkit-user-drag: none;
+    touch-action: none;
   }
+  #preview.pannable { cursor: grab; }
+  #preview.dragging { cursor: grabbing; }
   #empty { color: var(--dim); text-align: center; }
+  #zoomctl {
+    position: absolute; left: 12px; bottom: 12px; display: none;
+    align-items: center; gap: 2px; padding: 3px;
+    background: rgba(12,15,20,.78); border: 1px solid var(--line);
+    border-radius: 6px; backdrop-filter: blur(4px);
+  }
+  #zoomctl button {
+    padding: 3px 9px; min-width: 30px; line-height: 1.1;
+  }
+  #zoomctl .zval {
+    color: var(--dim); font-variant-numeric: tabular-nums;
+    min-width: 46px; text-align: center; font-size: 12px;
+  }
   aside {
     width: 300px; flex-shrink: 0; background: var(--panel);
     border-left: 1px solid var(--line); padding: 18px 18px 24px;
@@ -61,6 +79,12 @@
   <div id="stage">
     <img id="preview" alt="" hidden>
     <div id="empty">Waiting for the first stacked frame…</div>
+    <div id="zoomctl">
+      <button id="zoom-out" title="Zoom out (−)">&minus;</button>
+      <span class="zval" id="zoom-val">100%</span>
+      <button id="zoom-in" title="Zoom in (+)">+</button>
+      <button id="zoom-fit" title="Fit (0)">Fit</button>
+    </div>
   </div>
 
   <aside>
@@ -195,11 +219,118 @@ function renderStatus(s) {
 function showPreview(blob) {
   const url = URL.createObjectURL(blob);
   const img = $("preview");
-  img.onload = () => { if (lastUrl) URL.revokeObjectURL(lastUrl); lastUrl = url; };
+  img.onload = () => {
+    if (lastUrl) URL.revokeObjectURL(lastUrl);
+    lastUrl = url;
+    clampView();
+    applyView();          // image size can change as the crop settles
+  };
   img.src = url;
   img.hidden = false;
   $("empty").hidden = true;
+  $("zoomctl").style.display = "flex";
 }
+
+/* ---- zoom & pan -------------------------------------------------------- */
+const stage = $("stage");
+const preview = $("preview");
+const view = { scale: 1, x: 0, y: 0 };
+const MIN_SCALE = 1, MAX_SCALE = 16;
+
+function fitSize() {
+  // on-screen size of the image at scale 1 (rect already includes the transform)
+  const r = preview.getBoundingClientRect();
+  return { w: r.width / view.scale, h: r.height / view.scale };
+}
+
+function clampView() {
+  view.scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, view.scale));
+  const f = fitSize();
+  const maxX = Math.max(0, (f.w * view.scale - stage.clientWidth) / 2);
+  const maxY = Math.max(0, (f.h * view.scale - stage.clientHeight) / 2);
+  view.x = Math.min(maxX, Math.max(-maxX, view.x));
+  view.y = Math.min(maxY, Math.max(-maxY, view.y));
+}
+
+function applyView() {
+  preview.style.transform =
+    `translate(${view.x}px, ${view.y}px) scale(${view.scale})`;
+  preview.classList.toggle("pannable", view.scale > 1.001);
+  $("zoom-val").textContent = Math.round(view.scale * 100) + "%";
+}
+
+// zoom keeping the point under (clientX, clientY) fixed on screen
+function zoomAt(clientX, clientY, nextScale) {
+  const sr = stage.getBoundingClientRect();
+  const mx = clientX - (sr.left + stage.clientWidth / 2);
+  const my = clientY - (sr.top + stage.clientHeight / 2);
+  nextScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, nextScale));
+  const k = nextScale / view.scale;
+  view.x = mx - k * (mx - view.x);
+  view.y = my - k * (my - view.y);
+  view.scale = nextScale;
+  clampView();
+  applyView();
+}
+
+function zoomCentre(factor) {
+  const sr = stage.getBoundingClientRect();
+  zoomAt(sr.left + stage.clientWidth / 2, sr.top + stage.clientHeight / 2,
+         view.scale * factor);
+}
+
+function resetView() {
+  view.scale = 1; view.x = 0; view.y = 0;
+  applyView();
+}
+
+stage.addEventListener("wheel", (e) => {
+  if (preview.hidden) return;
+  e.preventDefault();
+  zoomAt(e.clientX, e.clientY, view.scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15));
+}, { passive: false });
+
+let drag = null;
+preview.addEventListener("pointerdown", (e) => {
+  if (preview.hidden || view.scale <= 1.001) return;
+  drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
+  preview.setPointerCapture(e.pointerId);
+  preview.classList.add("dragging");
+});
+preview.addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  view.x = drag.vx + (e.clientX - drag.x);
+  view.y = drag.vy + (e.clientY - drag.y);
+  clampView();
+  applyView();
+});
+function endDrag(e) {
+  if (!drag) return;
+  drag = null;
+  preview.classList.remove("dragging");
+  try { preview.releasePointerCapture(e.pointerId); } catch (_) {}
+}
+preview.addEventListener("pointerup", endDrag);
+preview.addEventListener("pointercancel", endDrag);
+preview.addEventListener("dragstart", (e) => e.preventDefault());
+
+preview.addEventListener("dblclick", (e) => {
+  if (view.scale > 1.001) resetView();
+  else zoomAt(e.clientX, e.clientY, 3);
+});
+
+$("zoom-in").addEventListener("click", () => zoomCentre(1.4));
+$("zoom-out").addEventListener("click", () => zoomCentre(1 / 1.4));
+$("zoom-fit").addEventListener("click", resetView);
+
+window.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" || preview.hidden) return;
+  if (e.key === "+" || e.key === "=") zoomCentre(1.4);
+  else if (e.key === "-" || e.key === "_") zoomCentre(1 / 1.4);
+  else if (e.key === "0") resetView();
+});
+
+window.addEventListener("resize", () => { clampView(); applyView(); });
 
 function connect() {
   ws = new WebSocket(`ws://${location.hostname}:${WS_PORT}`);
