@@ -85,6 +85,8 @@ class StretchParams:
     gamma: float = 1.0          # extra power curve, applied after MTF
     contrast: float = 1.0       # pivot-at-0.5 contrast multiplier
     green: float = 0.0          # green-noise removal (SCNR), 0 = off .. 1 = full
+    lum: float = 1.0            # luminance (L) blend when an L channel exists,
+                                # 0 = RGB only .. 1 = full LRGB
     auto: bool = True           # let the pipeline pick black/midtones each update
 
     def to_json(self) -> dict:

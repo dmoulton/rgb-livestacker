@@ -102,7 +102,9 @@ command. (`--watch` recurses, so point it at NINA's image root.)
    tracks the system throughput per filter (bandpass, QE, atmospheric
    extinction), not the nebula's emission lines. Falls back to bright-percentile
    matching when too few stars are found.
-8. **Combine** to linear RGB.
+8. **Combine** to linear RGB. If a luminance (`L`) channel is present, its
+   stack replaces the brightness of the RGB while the colour is kept (LRGB),
+   blended by a live slider.
 9. **Linked stretch**: one black/midtones/gamma/contrast curve through all
    three channels, plus an optional green-noise (SCNR) slider, applied live in
    the browser without re-stacking.
@@ -120,7 +122,6 @@ isn't one.
 ## Status / roadmap
 
 Working, including across a meridian flip (`astroalign` is rotation-invariant
-and a 180°-rotated sensor covers the same footprint). Not yet done: affine /
-distortion registration (residual star smear on very low-altitude targets),
-background-model smoothing early in a session, LRGB (luminance) support,
-PyInstaller packaging.
+and a 180°-rotated sensor covers the same footprint) and LRGB. Not yet done:
+affine / distortion registration (residual star smear on very low-altitude
+targets), background-model smoothing early in a session, PyInstaller packaging.

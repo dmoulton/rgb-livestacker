@@ -124,6 +124,10 @@
       <label for="green">Green noise (SCNR) <span id="green-v">0.00</span></label>
       <input type="range" id="green" min="0" max="1" step="0.02" value="0">
     </div>
+    <div class="ctl" id="lum-ctl" hidden>
+      <label for="lum">Luminance (LRGB) <span id="lum-v">1.00</span></label>
+      <input type="range" id="lum" min="0" max="1" step="0.02" value="1">
+    </div>
     <a class="btn" id="save" href="/snapshot.png" download="livestack.png">Save full-res PNG</a>
 
     <h2>Channels</h2>
@@ -148,7 +152,7 @@
 <script>
 const WS_PORT = "{{WS_PORT}}";
 const $ = (id) => document.getElementById(id);
-const sliders = ["black", "midtones", "gamma", "contrast", "green"];
+const sliders = ["black", "midtones", "gamma", "contrast", "green", "lum"];
 let ws, reconnectTimer, lastUrl;
 
 function currentParams() {
@@ -160,6 +164,7 @@ function currentParams() {
     gamma: parseFloat($("gamma").value),
     contrast: parseFloat($("contrast").value),
     green: parseFloat($("green").value),
+    lum: parseFloat($("lum").value),
   };
 }
 
@@ -177,6 +182,7 @@ function reflectValues() {
   $("gamma-v").textContent = (+$("gamma").value).toFixed(2);
   $("contrast-v").textContent = (+$("contrast").value).toFixed(2);
   $("green-v").textContent = (+$("green").value).toFixed(2);
+  $("lum-v").textContent = (+$("lum").value).toFixed(2);
   const dim = $("auto").checked;
   $("black").disabled = dim;
   $("midtones").disabled = dim;
@@ -195,6 +201,7 @@ function applyServerParams(p) {
   if (p.gamma != null) $("gamma").value = p.gamma;
   if (p.contrast != null) $("contrast").value = p.contrast;
   if (p.green != null) $("green").value = p.green;
+  if (p.lum != null) $("lum").value = p.lum;
   reflectValues();
 }
 
@@ -204,6 +211,7 @@ function renderStatus(s) {
   $("total").textContent = s.total_frames;
   $("rejected").textContent = s.rejected;
   $("elapsed").textContent = `${s.elapsed} s`;
+  $("lum-ctl").hidden = !s.luminance;
   if (s.calibration) {
     const c = s.calibration;
     $("cal-hot").textContent = c.hot_pixel ? "on" : "off";

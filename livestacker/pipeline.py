@@ -21,7 +21,7 @@ from .calibration import Calibrator
 from .config import RGB_FILTERS, StackConfig, StretchParams
 from .fitsframe import Frame
 from .processing import (
-    SceneModeler, apply_stretch, auto_stretch, combine_rgb,
+    SceneModeler, apply_luminance, apply_stretch, auto_stretch, combine_rgb,
 )
 
 log = logging.getLogger("livestacker.pipeline")
@@ -50,6 +50,7 @@ class Pipeline:
         self.reference_filter: str = ""
         self.reference_path: str = ""
         self._linear_rgb: np.ndarray | None = None
+        self._linear_lum: np.ndarray | None = None
         self._auto_params: StretchParams | None = None
         self._scene = SceneModeler()
         self._lock = threading.Lock()
@@ -111,9 +112,10 @@ class Pipeline:
                        st.covered_mask(self.cfg.coverage_min_frac),
                        st.frames)
                 for name, st in self.channels.items()}
-        rgb = combine_rgb(data, self.cfg, self._scene)
+        rgb, lum = combine_rgb(data, self.cfg, self._scene)
         with self._lock:
             self._linear_rgb = rgb
+            self._linear_lum = lum
             self._auto_params = auto_stretch(rgb) if rgb is not None else None
 
     # -- rendering -------------------------------------------------------
@@ -124,17 +126,25 @@ class Pipeline:
             merged.gamma = params.gamma
             merged.contrast = params.contrast
             merged.green = params.green
+            merged.lum = params.lum
             return merged
         return params
 
-    def render_preview(self, params: StretchParams) -> bytes | None:
+    def _render(self, params: StretchParams) -> Image.Image | None:
         with self._lock:
             rgb = None if self._linear_rgb is None else self._linear_rgb.copy()
+            lum = None if self._linear_lum is None else self._linear_lum.copy()
         if rgb is None:
             return None
         eff = self._resolve_params(params)
-        img = Image.fromarray(apply_stretch(rgb, eff), mode="RGB")
+        if lum is not None and eff.lum > 1e-3:
+            rgb = apply_luminance(rgb, lum, min(eff.lum, 1.0))
+        return Image.fromarray(apply_stretch(rgb, eff), mode="RGB")
 
+    def render_preview(self, params: StretchParams) -> bytes | None:
+        img = self._render(params)
+        if img is None:
+            return None
         longest = max(img.size)
         if longest > self.cfg.preview_max_px:
             scale = self.cfg.preview_max_px / longest
@@ -147,12 +157,9 @@ class Pipeline:
         return buf.getvalue()
 
     def snapshot_png(self, params: StretchParams) -> bytes | None:
-        with self._lock:
-            rgb = None if self._linear_rgb is None else self._linear_rgb.copy()
-        if rgb is None:
+        img = self._render(params)
+        if img is None:
             return None
-        img = Image.fromarray(apply_stretch(rgb, self._resolve_params(params)),
-                              mode="RGB")
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         return buf.getvalue()
@@ -189,6 +196,7 @@ class Pipeline:
                 "white_balance": (self._scene.wb_method
                                   if self.cfg.auto_white_balance else "off"),
             },
+            "luminance": self._linear_lum is not None,
             "channels": chans,
             "total_frames": total,
             "rejected": self.rejected,

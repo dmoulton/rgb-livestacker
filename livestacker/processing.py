@@ -191,35 +191,37 @@ def combine_rgb(
     channels: dict[str, tuple[np.ndarray, np.ndarray, int]],
     cfg: StackConfig,
     modeler: SceneModeler | None = None,
-) -> np.ndarray | None:
+) -> tuple[np.ndarray | None, np.ndarray | None]:
     """Build a linear (H, W, 3) RGB array from per-channel
-    `(mean, coverage, frame_count)`.
+    `(mean, coverage, frame_count)`, and — if a luminance (`L`) channel is
+    present — a matching (H, W) luminance array on the same 0..1 scale.
 
     The result is cropped to the bounding box of the region every present
-    channel covers, so the ragged dither border never appears. Missing
-    channels are filled from the mean of the present ones.
+    colour channel covers, so the ragged dither border never appears. Missing
+    colour channels are filled from the mean of the present ones.
     """
     present = {k: v for k, v in channels.items()
                if v is not None and v[0] is not None}
-    if not present:
-        return None
+    color = {k: v for k, v in present.items() if k in ("R", "G", "B")}
+    if not color:
+        return None, None
     if modeler is None:
         modeler = SceneModeler()
 
     common = None
-    for _, (_, cover, _) in present.items():
+    for _, (_, cover, _) in color.items():
         common = cover if common is None else (common & cover)
     if cfg.display_border_erode > 0:
         common = binary_erosion(common, iterations=cfg.display_border_erode)
     ys, xs = np.where(common)
     if ys.size == 0:
-        return None
+        return None, None
     sl = (slice(ys.min(), ys.max() + 1), slice(xs.min(), xs.max() + 1))
     keep = common[sl]
 
     means = {name: mean[sl].astype(np.float32)
-             for name, (mean, _, _) in present.items()}
-    frames = {name: n for name, (_, _, n) in present.items()}
+             for name, (mean, _, _) in color.items()}
+    frames = {name: n for name, (_, _, n) in color.items()}
 
     do_bg = cfg.background_enabled and all(
         n >= cfg.min_subs_for_background for n in frames.values())
@@ -230,18 +232,20 @@ def combine_rgb(
         bg_valid = binary_erosion(keep, iterations=cfg.background_border_erode)
         if bg_valid.sum() < 0.05 * keep.sum():
             do_bg = False
+    sky_ref = None
     if do_bg:
-        lum = np.mean(list(means.values()), axis=0)
-        smask = source_mask(lum, cfg)
+        lum0 = np.mean(list(means.values()), axis=0)
+        smask = source_mask(lum0, cfg)
         exclude = ~bg_valid | smask
         sky_ref = bg_valid & ~smask
 
-    proc: dict[str, np.ndarray] = {}
-    for name, img in means.items():
+    def flatten(name: str, img: np.ndarray, n: int) -> np.ndarray:
         if do_bg:
-            img = img - modeler.background(name, img, exclude, cfg, frames[name])
+            img = img - modeler.background(name, img, exclude, cfg, n)
             img = img - np.median(img[sky_ref])
-        proc[name] = np.clip(img, 0.0, None)
+        return np.clip(img, 0.0, None)
+
+    proc = {name: flatten(name, img, frames[name]) for name, img in means.items()}
 
     if cfg.auto_white_balance:
         total = sum(frames.values())
@@ -252,11 +256,35 @@ def combine_rgb(
     fallback = np.mean(np.stack(list(proc.values())), axis=0)
     rgb = np.stack([proc.get(c, fallback) for c in ("R", "G", "B")], axis=-1)
     rgb *= keep[..., None]
+    norm = float(np.percentile(rgb.max(axis=-1)[keep], 99.5)) or 1.0
+    rgb = np.clip(rgb / norm, 0.0, None).astype(np.float32)
 
-    norm = float(np.percentile(rgb.max(axis=-1)[keep], 99.5))
-    if norm > 0:
-        rgb = rgb / norm
-    return np.clip(rgb, 0.0, None).astype(np.float32)
+    lum = None
+    lch = present.get("L")
+    if lch is not None and lch[2] >= cfg.min_subs_for_background:
+        l_mean = lch[0][sl].astype(np.float32)
+        l_cover = lch[1][sl] & keep
+        l_flat = flatten("L", l_mean, lch[2])
+        l_norm = float(np.percentile(l_flat[l_cover], 99.5)) if l_cover.any() else 0.0
+        if l_norm > 0:
+            lum = np.where(l_cover, np.clip(l_flat / l_norm, 0.0, None), np.nan)
+            lum = lum.astype(np.float32)
+
+    return rgb, lum
+
+
+# -- luminance (LRGB) -------------------------------------------------
+
+def apply_luminance(rgb: np.ndarray, lum: np.ndarray, blend: float) -> np.ndarray:
+    """Replace the brightness of `rgb` with `lum` (a mono L stack) while keeping
+    its colour, blended by `blend` (0 = RGB only, 1 = full L). `lum` may be NaN
+    where the L channel has no coverage — those pixels are left as RGB.
+    """
+    lr = 0.30 * rgb[..., 0] + 0.59 * rgb[..., 1] + 0.11 * rgb[..., 2]
+    target = np.where(np.isfinite(lum),
+                      (1.0 - blend) * lr + blend * np.nan_to_num(lum), lr)
+    scale = np.clip(target / np.maximum(lr, 1e-4), 0.0, 6.0)
+    return np.clip(rgb * scale[..., None], 0.0, None).astype(np.float32)
 
 
 # -- linked display stretch --------------------------------------------
