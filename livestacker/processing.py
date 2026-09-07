@@ -1,9 +1,10 @@
 """Background removal, white balance, channel combination and the linked stretch.
 
 Everything here operates on the *current* accumulated stacks. The linked
-stretch is cheap enough to re-run on every slider move; the background model
-is heavier, so it is cached per channel and refreshed only every few frames
-(`BackgroundModeler`). Nothing here is baked back into the raw accumulation.
+stretch is cheap enough to re-run on every slider move; the heavier scene
+models (per-channel background surface, star-flux white balance) are cached
+and refreshed only every few frames (`SceneModeler`). Nothing here is baked
+back into the raw accumulation.
 """
 
 from __future__ import annotations
@@ -13,8 +14,10 @@ import logging
 import numpy as np
 from scipy.ndimage import binary_dilation, binary_erosion
 
-from astropy.stats import SigmaClip
+from astropy.stats import SigmaClip, sigma_clipped_stats
+from photutils.aperture import CircularAperture, aperture_photometry
 from photutils.background import Background2D, MedianBackground
+from photutils.detection import DAOStarFinder
 from photutils.segmentation import detect_sources, detect_threshold
 
 from .config import StackConfig, StretchParams
@@ -50,31 +53,12 @@ def estimate_background(mean: np.ndarray, exclude: np.ndarray,
     return bkg.background.astype(np.float32)
 
 
-class BackgroundModeler:
-    """Per-channel background cache. Recomputes a channel's model only once its
-    frame count has advanced `background_every_n_frames`."""
-
-    def __init__(self) -> None:
-        self._cache: dict[str, tuple[int, np.ndarray]] = {}
-
-    def get(self, name: str, mean: np.ndarray, exclude: np.ndarray,
-            cfg: StackConfig, frames: int) -> np.ndarray:
-        hit = self._cache.get(name)
-        if hit is not None and frames - hit[0] < cfg.background_every_n_frames \
-                and hit[1].shape == mean.shape:
-            return hit[1]
-        bg = estimate_background(mean, exclude, cfg)
-        self._cache[name] = (frames, bg)
-        return bg
-
-
 # -- white balance ------------------------------------------------------
 
-def _white_balance_scales(channels: dict[str, np.ndarray],
-                          valid: np.ndarray) -> dict[str, float]:
-    """One scalar per channel so bright stars read roughly neutral. Backgrounds
-    are already ~0 post-subtraction, so this matches a high (star-core)
-    percentile measured over the solidly-covered region."""
+def _percentile_scales(channels: dict[str, np.ndarray],
+                       valid: np.ndarray) -> dict[str, float]:
+    """Fallback white balance: match a high (star-core) percentile per channel.
+    Crude — the nebula's own bright pixels bias it — but robust with no stars."""
     highs = {}
     for name, img in channels.items():
         highs[name] = max(float(np.percentile(img[valid], 99.5)), 1e-6)
@@ -84,12 +68,123 @@ def _white_balance_scales(channels: dict[str, np.ndarray],
     return {name: target / h for name, h in highs.items()}
 
 
+def star_flux_scales(channels: dict[str, np.ndarray], valid: np.ndarray,
+                     cfg: StackConfig) -> dict[str, float] | None:
+    """White balance from the ensemble of field stars: scale R/G/B so the
+    *median* star has equal flux in all three. Star colour reflects the system
+    throughput per filter (bandpass, QE, atmospheric extinction) — exactly what
+    white balance should equalise — and is immune to the nebula's line
+    emission. Returns None if fewer than `wb_min_stars` usable stars are found,
+    so the caller can fall back.
+    """
+    if not all(c in channels for c in ("R", "G", "B")):
+        return None
+
+    lum = np.mean([channels[c] for c in ("R", "G", "B")], axis=0)
+    _, med, std = sigma_clipped_stats(lum[valid], sigma=3.0)
+    if not np.isfinite(std) or std <= 0:
+        return None
+
+    try:
+        finder = DAOStarFinder(fwhm=cfg.wb_fwhm, threshold=cfg.wb_nsigma * std)
+        tbl = finder(lum - med, mask=~valid)
+    except Exception:
+        return None
+    if tbl is None or len(tbl) < cfg.wb_min_stars:
+        return None
+
+    # keep round, well-sampled, non-edge sources in a sane brightness band
+    x = np.asarray(tbl["xcentroid"], dtype=float)
+    y = np.asarray(tbl["ycentroid"], dtype=float)
+    flux = np.asarray(tbl["flux"], dtype=float)
+    r1 = np.asarray(tbl["roundness1"], dtype=float)
+    r2 = np.asarray(tbl["roundness2"], dtype=float)
+    sharp = np.asarray(tbl["sharpness"], dtype=float)
+    h, w = lum.shape
+    m = cfg.wb_fwhm * 3.0
+    good = (
+        (np.abs(r1) < 0.35) & (np.abs(r2) < 0.35)
+        & (sharp > 0.3) & (sharp < 1.0)
+        & (x > m) & (x < w - m) & (y > m) & (y < h - m)
+    )
+    if good.any():
+        good &= flux < np.percentile(flux[good], 97)   # drop likely-saturated
+        good &= flux > np.percentile(flux[good], 20)    # drop low-SNR
+    if good.sum() < cfg.wb_min_stars:
+        return None
+
+    idx = np.where(good)[0]
+    if idx.size > cfg.wb_max_stars:
+        idx = idx[np.argsort(flux[idx])[-cfg.wb_max_stars:]]
+    ap = CircularAperture(np.column_stack([x[idx], y[idx]]), r=2.5 * cfg.wb_fwhm)
+
+    sums = {}
+    for c in ("R", "G", "B"):
+        phot = aperture_photometry(channels[c], ap)
+        sums[c] = np.asarray(phot["aperture_sum"], dtype=float)
+
+    ok = (sums["R"] > 0) & (sums["G"] > 0) & (sums["B"] > 0)
+    if ok.sum() < cfg.wb_min_stars:
+        return None
+    lg = np.log(sums["G"][ok] / sums["R"][ok])
+    lb = np.log(sums["B"][ok] / sums["R"][ok])
+
+    def robust_median(a: np.ndarray) -> float:
+        mid = np.median(a)
+        mad = np.median(np.abs(a - mid)) or 1e-6
+        keep = np.abs(a - mid) < 3.0 * 1.4826 * mad
+        return float(np.median(a[keep])) if keep.any() else float(mid)
+
+    s = {"R": 1.0, "G": float(np.exp(-robust_median(lg))),
+         "B": float(np.exp(-robust_median(lb)))}
+    g = (s["R"] * s["G"] * s["B"]) ** (1.0 / 3.0)   # keep overall brightness
+    return {k: v / g for k, v in s.items()}
+
+
+# -- scene model cache ------------------------------------------------
+
+class SceneModeler:
+    """Caches the heavy per-scene models (background surface, white balance),
+    refreshing them only once the frame count has advanced
+    `background_every_n_frames`."""
+
+    def __init__(self) -> None:
+        self._bg: dict[str, tuple[int, np.ndarray]] = {}
+        self._wb: tuple[int, dict[str, float]] | None = None
+        self.wb_method: str = "none"
+
+    def background(self, name: str, mean: np.ndarray, exclude: np.ndarray,
+                   cfg: StackConfig, frames: int) -> np.ndarray:
+        hit = self._bg.get(name)
+        if hit is not None and frames - hit[0] < cfg.background_every_n_frames \
+                and hit[1].shape == mean.shape:
+            return hit[1]
+        bg = estimate_background(mean, exclude, cfg)
+        self._bg[name] = (frames, bg)
+        return bg
+
+    def white_balance(self, channels: dict[str, np.ndarray], valid: np.ndarray,
+                      cfg: StackConfig, frames: int) -> dict[str, float]:
+        if self._wb is not None \
+                and frames - self._wb[0] < cfg.background_every_n_frames:
+            return self._wb[1]
+        scales = star_flux_scales(channels, valid, cfg)
+        self.wb_method = "stars"
+        if scales is None:
+            scales = _percentile_scales(channels, valid)
+            self.wb_method = "percentile"
+        self._wb = (frames, scales)
+        log.info("white balance (%s): %s", self.wb_method,
+                 " ".join(f"{k}x{v:.2f}" for k, v in sorted(scales.items())))
+        return scales
+
+
 # -- combine ----------------------------------------------------------
 
 def combine_rgb(
     channels: dict[str, tuple[np.ndarray, np.ndarray, int]],
     cfg: StackConfig,
-    modeler: BackgroundModeler | None = None,
+    modeler: SceneModeler | None = None,
 ) -> np.ndarray | None:
     """Build a linear (H, W, 3) RGB array from per-channel
     `(mean, coverage, frame_count)`.
@@ -103,7 +198,7 @@ def combine_rgb(
     if not present:
         return None
     if modeler is None:
-        modeler = BackgroundModeler()
+        modeler = SceneModeler()
 
     common = None
     for _, (_, cover, _) in present.items():
@@ -138,13 +233,15 @@ def combine_rgb(
     proc: dict[str, np.ndarray] = {}
     for name, img in means.items():
         if do_bg:
-            img = img - modeler.get(name, img, exclude, cfg, frames[name])
+            img = img - modeler.background(name, img, exclude, cfg, frames[name])
             img = img - np.median(img[sky_ref])
         proc[name] = np.clip(img, 0.0, None)
 
     if cfg.auto_white_balance:
-        for name, s in _white_balance_scales(proc, keep).items():
-            proc[name] = proc[name] * s
+        total = sum(frames.values())
+        for name, s in modeler.white_balance(proc, keep, cfg, total).items():
+            if name in proc:
+                proc[name] = proc[name] * s
 
     fallback = np.mean(np.stack(list(proc.values())), axis=0)
     rgb = np.stack([proc.get(c, fallback) for c in ("R", "G", "B")], axis=-1)

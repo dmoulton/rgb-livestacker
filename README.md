@@ -81,7 +81,11 @@ Then open <http://localhost:8080/>.
    sigma-clipped per mesh cell, with bright sources and the frame border
    masked out, so the nebula does not bias its own background. Gated on a
    minimum sub count, cached and refreshed every few frames.
-7. **White balance**: one scalar per channel matching bright-star levels.
+7. **White balance**: detect the field stars, measure each one's flux in R, G
+   and B, and scale the channels so the *median* star is neutral — star colour
+   tracks the system throughput per filter (bandpass, QE, atmospheric
+   extinction), not the nebula's emission lines. Falls back to bright-percentile
+   matching when too few stars are found.
 8. **Combine** to linear RGB.
 9. **Linked stretch**: one black/midtones/gamma/contrast curve through all
    three channels, applied live in the browser without re-stacking.
@@ -89,5 +93,5 @@ Then open <http://localhost:8080/>.
 ## Status / roadmap
 
 Working. Not yet done: affine / distortion registration (residual star smear on
-very low-altitude targets), star-flux-ratio white balance, LRGB (luminance)
-support, meridian-flip robustness, PyInstaller packaging.
+very low-altitude targets), background-model smoothing early in a session, LRGB
+(luminance) support, meridian-flip robustness, PyInstaller packaging.

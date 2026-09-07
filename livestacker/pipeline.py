@@ -21,7 +21,7 @@ from .calibration import Calibrator
 from .config import StackConfig, StretchParams
 from .fitsframe import Frame
 from .processing import (
-    BackgroundModeler, apply_stretch, auto_stretch, combine_rgb,
+    SceneModeler, apply_stretch, auto_stretch, combine_rgb,
 )
 
 log = logging.getLogger("livestacker.pipeline")
@@ -51,7 +51,7 @@ class Pipeline:
         self.reference_path: str = ""
         self._linear_rgb: np.ndarray | None = None
         self._auto_params: StretchParams | None = None
-        self._bg_modeler = BackgroundModeler()
+        self._scene = SceneModeler()
         self._lock = threading.Lock()
         self.started_at = time.time()
         self.rejected = 0
@@ -96,7 +96,7 @@ class Pipeline:
     def _recombine(self) -> None:
         data = {name: (st.mean, st.coverage, st.frames)
                 for name, st in self.channels.items()}
-        rgb = combine_rgb(data, self.cfg, self._bg_modeler)
+        rgb = combine_rgb(data, self.cfg, self._scene)
         with self._lock:
             self._linear_rgb = rgb
             self._auto_params = auto_stretch(rgb) if rgb is not None else None
@@ -167,6 +167,8 @@ class Pipeline:
                 "dark": dark,
                 "flats": flats,
                 "background": self.cfg.background_enabled,
+                "white_balance": (self._scene.wb_method
+                                  if self.cfg.auto_white_balance else "off"),
             },
             "channels": chans,
             "total_frames": total,

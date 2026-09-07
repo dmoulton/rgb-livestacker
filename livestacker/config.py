@@ -36,8 +36,15 @@ class StackConfig:
     source_mask_dilate: int = 8
     # Enable background / gradient removal.
     background_enabled: bool = True
-    # Automatic per-channel white balance (match bright-star levels).
+    # Automatic per-channel white balance. The preferred method detects stars
+    # and scales the channels so the median star is neutral (star colour tracks
+    # filter/QE/extinction throughput, not the nebula's emission lines); it
+    # falls back to bright-percentile matching when too few stars are found.
     auto_white_balance: bool = True
+    wb_min_stars: int = 8          # need at least this many good stars
+    wb_fwhm: float = 3.0          # DAOStarFinder PSF guess, px
+    wb_nsigma: float = 5.0        # star detection threshold, sigma
+    wb_max_stars: int = 300      # cap photometry cost
     # Per-frame hot/cold pixel cosmetic correction (no calibration frames
     # needed; this is what stops un-dark-subtracted hot pixels from smearing
     # into "walking noise" as the mount dithers).
