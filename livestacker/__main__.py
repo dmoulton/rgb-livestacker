@@ -67,6 +67,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--preview-px", type=int, default=1600,
                    help="longest preview edge sent to the browser")
 
+    for edge in ("top", "bottom", "left", "right"):
+        p.add_argument(f"--crop-{edge}", type=int, default=0, metavar="N",
+                       help=f"trim N rows/columns off the {edge} of every raw "
+                            "frame (a permanently bad sensor edge)")
+
     p.add_argument("-v", "--verbose", action="store_true", help="chatty logging")
     return p
 
@@ -97,6 +102,8 @@ def main(argv: list[str] | None = None) -> int:
         hot_pixel_sigma=args.hot_pixel_sigma,
         sigma_clip_enabled=not args.no_sigma_clip,
         sigma_clip_kappa=args.sigma_clip_kappa,
+        crop_top=args.crop_top, crop_bottom=args.crop_bottom,
+        crop_left=args.crop_left, crop_right=args.crop_right,
     )
 
     master_bias = None

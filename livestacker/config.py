@@ -16,6 +16,13 @@ RGB_FILTERS = ("R", "G", "B")
 
 @dataclass(frozen=True)
 class StackConfig:
+    # Trim this many rows/columns off every raw frame before it enters the
+    # pipeline (sensor coordinates, before registration) — for a permanently
+    # bad sensor edge, e.g. an amp-glow row band.
+    crop_top: int = 0
+    crop_bottom: int = 0
+    crop_left: int = 0
+    crop_right: int = 0
     # Minimum frames in a channel before its background model is trusted.
     min_subs_for_background: int = 3
     # photutils Background2D: mesh box size (px) and the running-median filter

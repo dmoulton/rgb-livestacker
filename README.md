@@ -67,6 +67,7 @@ command. (`--watch` recurses, so point it at NINA's image root.)
 | `--no-background` | disable gradient/background subtraction |
 | `--no-auto-wb` | disable automatic per-channel white balance |
 | `--background-box N` | background mesh box size in px (default 128) |
+| `--crop-top/-bottom/-left/-right N` | trim N rows/columns off every raw frame (a permanently bad sensor edge) |
 | `--preview-px N` | longest preview edge sent to the browser (default 1600) |
 | `-v` | verbose logging |
 

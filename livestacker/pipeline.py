@@ -76,11 +76,23 @@ class Pipeline:
                 last = exc
         return None, last
 
+    def _crop_edges(self, data: np.ndarray) -> np.ndarray:
+        c = self.cfg
+        if not (c.crop_top or c.crop_bottom or c.crop_left or c.crop_right):
+            return data
+        h, w = data.shape
+        t = min(c.crop_top, h - 1)
+        b = h - min(c.crop_bottom, h - 1 - t)
+        l = min(c.crop_left, w - 1)
+        r = w - min(c.crop_right, w - 1 - l)
+        return data[t:b, l:r]
+
     def ingest(self, frame: Frame) -> IngestResult:
         ch = self.channels.setdefault(
             frame.filter, ChannelStack(frame.filter, self.cfg))
 
         data = self.calibrator.apply(frame) if self.calibrator else frame.data
+        data = self._crop_edges(data)
 
         if self.reference is None:
             self.reference = data.copy()

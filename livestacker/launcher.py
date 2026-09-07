@@ -30,6 +30,10 @@ DEFAULTS = {
     "bias": "",
     "dark": "",
     "flat": "",
+    "crop_top": 0,
+    "crop_bottom": 0,
+    "crop_left": 0,
+    "crop_right": 0,
     "hot_pixel": True,
     "sigma_clip": True,
     "sigma_clip_kappa": 3.0,
@@ -123,6 +127,18 @@ class Launcher:
             r += 1
             ttk.Label(frm, text=hint, foreground="#888").grid(
                 row=r, column=1, columnspan=2, sticky="w", padx=8); r += 1
+
+        ttk.Label(frm, text="Crop edges").grid(row=r, column=0, sticky="w", **pad)
+        crop = ttk.Frame(frm)
+        crop.grid(row=r, column=1, columnspan=2, sticky="w", **pad); r += 1
+        for key, lbl in (("crop_top", "top"), ("crop_bottom", "bottom"),
+                         ("crop_left", "left"), ("crop_right", "right")):
+            ttk.Label(crop, text=lbl).pack(side="left", padx=(0, 2))
+            ttk.Spinbox(crop, from_=0, to=500, width=4,
+                        textvariable=self.v[key]).pack(side="left", padx=(0, 10))
+        ttk.Label(frm, text="px trimmed off every raw frame (a bad sensor edge)",
+                  foreground="#888").grid(row=r, column=1, columnspan=2,
+                                          sticky="w", padx=8); r += 1
 
         ttk.Separator(frm, orient="horizontal").grid(
             row=r, column=0, columnspan=3, sticky="ew", pady=8); r += 1
@@ -227,6 +243,10 @@ class Launcher:
         if not self.v["auto_wb"].get():
             cmd.append("--no-auto-wb")
         cmd += ["--preview-px", self.v["preview_px"].get()]
+        for edge in ("top", "bottom", "left", "right"):
+            val = str(self.v[f"crop_{edge}"].get()).strip()
+            if val and val not in ("0", "0.0"):
+                cmd += [f"--crop-{edge}", val]
         cmd += ["--host", "0.0.0.0" if self.v["share_lan"].get() else "127.0.0.1"]
         cmd += ["--web-port", self.v["web_port"].get(),
                 "--ws-port", self.v["ws_port"].get()]
