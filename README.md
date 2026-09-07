@@ -47,6 +47,8 @@ Then open <http://localhost:8080/>.
 | `--flat PATH` | master flat(s): a FITS file, or a folder of raw flats (grouped by `FILTER`, one master per filter) |
 | `--no-hot-pixel` | disable per-frame hot/cold pixel correction (on by default) |
 | `--hot-pixel-sigma N` | hot-pixel detection threshold, robust sigma (default 8) |
+| `--no-sigma-clip` | disable rolling per-pixel trail/cosmic rejection (on by default) |
+| `--sigma-clip-kappa N` | sigma-clip rejection threshold (default 3.0) |
 | `--no-background` | disable gradient/background subtraction |
 | `--no-auto-wb` | disable automatic per-channel white balance |
 | `--background-box N` | background mesh box size in px (default 128) |
@@ -68,10 +70,13 @@ Then open <http://localhost:8080/>.
 4. **Register** every frame — any filter — to the first frame received, with
    `astroalign` (triangle star matching, no plate solve). This is what keeps
    the independently-growing channel stacks from drifting apart.
-5. **Stack**: per-pixel running mean, tracking per-pixel coverage so
-   partially-overlapping (dithered / flipped) frames still contribute. The
-   combined result is cropped to the region every channel covers, so the
-   ragged dither border never appears.
+5. **Stack**: per-pixel running mean (Welford) with a rolling sigma-clip — an
+   incoming value more than `kappa` sigma from the running mean is dropped for
+   that pixel, rejecting satellite / aircraft trails and cosmics that land in a
+   single frame. Per-pixel coverage is tracked so partially-overlapping
+   (dithered / flipped) frames still contribute; the combined result is cropped
+   to the region every channel covers, so the ragged dither border never
+   appears.
 6. **Background**: a `photutils` `Background2D` surface per channel —
    sigma-clipped per mesh cell, with bright sources and the frame border
    masked out, so the nebula does not bias its own background. Gated on a
@@ -83,6 +88,6 @@ Then open <http://localhost:8080/>.
 
 ## Status / roadmap
 
-Working. Not yet done: rolling sigma-clip rejection, star-flux-ratio white
-balance, LRGB (luminance) support, meridian-flip robustness, PyInstaller
-packaging.
+Working. Not yet done: affine / distortion registration (residual star smear on
+very low-altitude targets), star-flux-ratio white balance, LRGB (luminance)
+support, meridian-flip robustness, PyInstaller packaging.

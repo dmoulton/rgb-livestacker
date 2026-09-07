@@ -43,6 +43,12 @@ class StackConfig:
     # into "walking noise" as the mount dithers).
     hot_pixel_enabled: bool = True
     hot_pixel_sigma: float = 8.0
+    # Rolling per-pixel sigma-clip rejection in the running stack (rejects
+    # satellite / aircraft trails and cosmics that land in one frame).
+    sigma_clip_enabled: bool = True
+    sigma_clip_kappa: float = 3.0
+    # Samples a pixel needs before it is eligible for clipping.
+    sigma_clip_warmup: int = 6
     # Longest preview edge pushed over the socket, in pixels. Full-res stays
     # available through the /snapshot endpoint.
     preview_max_px: int = 1600

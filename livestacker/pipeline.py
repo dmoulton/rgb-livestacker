@@ -59,7 +59,8 @@ class Pipeline:
     # -- ingestion ---------------------------------------------------------
 
     def ingest(self, frame: Frame) -> IngestResult:
-        ch = self.channels.setdefault(frame.filter, ChannelStack(frame.filter))
+        ch = self.channels.setdefault(
+            frame.filter, ChannelStack(frame.filter, self.cfg))
 
         data = self.calibrator.apply(frame) if self.calibrator else frame.data
 
@@ -147,6 +148,7 @@ class Pipeline:
             name: {
                 "frames": st.frames,
                 "last": st.last_path,
+                "clipped_px": st.rejected,
             }
             for name, st in sorted(self.channels.items())
         }
@@ -161,6 +163,7 @@ class Pipeline:
             "reference_filter": self.reference_filter,
             "calibration": {
                 "hot_pixel": self.cfg.hot_pixel_enabled,
+                "sigma_clip": self.cfg.sigma_clip_enabled,
                 "dark": dark,
                 "flats": flats,
                 "background": self.cfg.background_enabled,

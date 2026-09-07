@@ -99,6 +99,7 @@
       <tr><td>Rejected</td><td id="rejected">0</td></tr>
       <tr><td>Elapsed</td><td id="elapsed">0 s</td></tr>
       <tr><td>Hot-pixel fix</td><td id="cal-hot">–</td></tr>
+      <tr><td>Sigma-clip</td><td id="cal-clip">–</td></tr>
       <tr><td>Master dark</td><td id="cal-dark">–</td></tr>
       <tr><td>Flat field</td><td id="cal-flat">–</td></tr>
       <tr><td>Background</td><td id="cal-bg">–</td></tr>
@@ -166,6 +167,7 @@ function renderStatus(s) {
   if (s.calibration) {
     const c = s.calibration;
     $("cal-hot").textContent = c.hot_pixel ? "on" : "off";
+    $("cal-clip").textContent = c.sigma_clip ? "on" : "off";
     $("cal-dark").textContent = c.dark ? c.dark.replace(/^.*\//, "") : "none";
     $("cal-flat").textContent = (c.flats && c.flats.length)
       ? c.flats.join(" ") : "none";
@@ -174,9 +176,12 @@ function renderStatus(s) {
 
   const body = $("channels").querySelector("tbody");
   body.innerHTML = "";
+  const fmt = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + "M"
+    : n >= 1e3 ? (n / 1e3).toFixed(0) + "k" : String(n);
   for (const [name, c] of Object.entries(s.channels)) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td class="chan-${name}">${name}</td><td>${c.frames}</td>`;
+    const clip = c.clipped_px ? ` <span style="color:var(--dim)">(${fmt(c.clipped_px)} clipped)</span>` : "";
+    tr.innerHTML = `<td class="chan-${name}">${name}</td><td>${c.frames}${clip}</td>`;
     body.appendChild(tr);
   }
   // when Auto is on, show the numbers the server actually used

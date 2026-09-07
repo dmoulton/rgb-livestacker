@@ -46,6 +46,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="disable per-frame hot/cold pixel correction")
     p.add_argument("--hot-pixel-sigma", type=float, default=8.0,
                    help="hot-pixel detection threshold in robust sigma (default: 8)")
+    p.add_argument("--no-sigma-clip", action="store_true",
+                   help="disable rolling per-pixel sigma-clip trail/cosmic rejection")
+    p.add_argument("--sigma-clip-kappa", type=float, default=3.0,
+                   help="sigma-clip rejection threshold (default: 3.0)")
 
     p.add_argument("--no-background", action="store_true",
                    help="disable background/gradient subtraction")
@@ -78,6 +82,8 @@ def main(argv: list[str] | None = None) -> int:
         preview_max_px=args.preview_px,
         hot_pixel_enabled=not args.no_hot_pixel,
         hot_pixel_sigma=args.hot_pixel_sigma,
+        sigma_clip_enabled=not args.no_sigma_clip,
+        sigma_clip_kappa=args.sigma_clip_kappa,
     )
 
     master_dark = None
