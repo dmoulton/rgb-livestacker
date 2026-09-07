@@ -1,10 +1,12 @@
-"""Frame calibration: master dark, flat field, and hot-pixel cleanup.
+"""Frame calibration: master bias, dark, flat field, and hot-pixel cleanup.
 
-Order per light frame: subtract dark, divide by the (normalised) flat for that
-filter, then a per-frame hot/cold pixel cosmetic pass. The hot-pixel pass needs
-no calibration frames and is what stops un-dark-subtracted hot pixels from
-smearing into "walking noise" as the mount dithers; dark and flat are layered
-on when matching calibration sets are available.
+Order per light frame: subtract bias, subtract dark, divide by the (normalised)
+flat for that filter, then a per-frame hot/cold pixel cosmetic pass. The
+hot-pixel pass needs no calibration frames and is what stops un-dark-subtracted
+hot pixels from smearing into "walking noise" as the mount dithers; bias, dark
+and flat are layered on when matching calibration sets are available. When a
+bias is supplied the dark master and the flats are bias-subtracted too, so an
+exposure-scaled dark is then correct rather than approximate.
 """
 
 from __future__ import annotations
@@ -44,32 +46,76 @@ def cosmetic_correct(data: np.ndarray, sigma: float = 8.0) -> np.ndarray:
     return out
 
 
-class MasterDark:
+def _combine(path: str | Path) -> tuple[np.ndarray, dict, str]:
+    """Median-combine every FITS under `path` (or load it, if it's one file).
+    Returns (data, meta-from-first-frame, human label)."""
+    path = Path(path)
+    if path.is_dir():
+        files = sorted(p for p in path.rglob("*") if p.suffix.lower() in FITS_SUFFIXES)
+        if not files:
+            raise FileNotFoundError(f"no FITS files under {path}")
+        frames = [load_frame(f) for f in files]
+        data = np.median(np.stack([f.data for f in frames]), axis=0)
+        return data, _meta(frames[0]), f"{path} ({len(files)} frames)"
+    frame = load_frame(path)
+    return frame.data, _meta(frame), str(path)
+
+
+class MasterBias:
+    """The camera's fixed read-noise / offset pattern (very short exposures)."""
+
     def __init__(self, data: np.ndarray, meta: dict, source: str):
         self.data = data.astype(np.float32)
         self.meta = meta
         self.source = source
 
+    @classmethod
+    def build(cls, path: str | Path) -> "MasterBias":
+        data, meta, label = _combine(path)
+        log.info("master bias: %s  %s", label, _describe(meta))
+        return cls(data, meta, label)
+
+    def warnings_for(self, frame: Frame) -> list[str]:
+        w: list[str] = []
+        if self.data.shape != frame.data.shape:
+            w.append(f"shape {self.data.shape} != light {frame.data.shape} "
+                     "-- bias will be skipped")
+            return w
+        bm, lm = self.meta, _meta(frame)
+        if bm["gain"] is not None and lm["gain"] is not None and bm["gain"] != lm["gain"]:
+            w.append(f"gain {bm['gain']} != light {lm['gain']}")
+        if bm["xbinning"] is not None and lm["xbinning"] is not None \
+                and bm["xbinning"] != lm["xbinning"]:
+            w.append(f"binning {bm['xbinning']} != light {lm['xbinning']}")
+        return w
+
+    def subtract(self, data: np.ndarray) -> np.ndarray:
+        if self.data.shape != data.shape:
+            return data
+        return data - self.data
+
+
+class MasterDark:
+    def __init__(self, data: np.ndarray, meta: dict, source: str,
+                 debiased: bool = False):
+        self.data = data.astype(np.float32)
+        self.meta = meta
+        self.source = source
+        self.debiased = debiased   # True -> `data` is pure dark current
+
     # -- construction ---------------------------------------------------
 
     @classmethod
-    def build(cls, path: str | Path) -> "MasterDark":
-        path = Path(path)
-        if path.is_dir():
-            files = sorted(p for p in path.rglob("*") if p.suffix.lower() in FITS_SUFFIXES)
-            if not files:
-                raise FileNotFoundError(f"no FITS files under {path}")
-            frames = [load_frame(f) for f in files]
-            data = np.median(np.stack([f.data for f in frames]), axis=0)
-            meta = _meta(frames[0])
-            log.info("master dark: median of %d frames from %s  %s",
-                     len(files), path, _describe(meta))
-            return cls(data, meta, f"{path} ({len(files)} frames)")
-
-        frame = load_frame(path)
-        meta = _meta(frame)
-        log.info("master dark: single file %s  %s", path, _describe(meta))
-        return cls(frame.data, meta, str(path))
+    def build(cls, path: str | Path,
+              bias: "MasterBias | None" = None) -> "MasterDark":
+        data, meta, label = _combine(path)
+        debiased = False
+        if bias is not None and bias.data.shape == data.shape:
+            data = data - bias.data
+            debiased = True
+        log.info("master dark: %s  %s%s", label, _describe(meta),
+                 "  (bias-subtracted)" if debiased else "")
+        return cls(data, meta, label, debiased)
 
     # -- application --------------------------------------------------
 
@@ -83,8 +129,9 @@ class MasterDark:
         if dm["gain"] is not None and lm["gain"] is not None and dm["gain"] != lm["gain"]:
             w.append(f"gain {dm['gain']} != light {lm['gain']}")
         if dm["exptime"] and lm["exptime"] and abs(dm["exptime"] - lm["exptime"]) / lm["exptime"] > 0.02:
+            note = "" if self.debiased else " (approximate: no bias frame)"
             w.append(f"exposure {dm['exptime']}s != light {lm['exptime']}s "
-                     "-- scaling dark by the ratio (approximate: no bias frame)")
+                     f"-- scaling dark by the ratio{note}")
         if dm["temp"] is not None and lm["temp"] is not None and abs(dm["temp"] - lm["temp"]) > 3:
             w.append(f"sensor temp {dm['temp']}C != light {lm['temp']}C "
                      "-- dark current will not match")
@@ -132,9 +179,11 @@ class MasterFlat:
         return data / self.data
 
 
-def build_flats(path: str | Path) -> dict[str, MasterFlat]:
+def build_flats(path: str | Path,
+                bias: "MasterBias | None" = None) -> dict[str, MasterFlat]:
     """Build one `MasterFlat` per filter found under `path` (a single FITS file
-    or a folder of raw flats). Keyed by normalised filter name."""
+    or a folder of raw flats). Keyed by normalised filter name. If a bias is
+    supplied it is subtracted before the flat is normalised."""
     path = Path(path)
     if path.is_dir():
         files = sorted(p for p in path.rglob("*") if p.suffix.lower() in FITS_SUFFIXES)
@@ -151,9 +200,15 @@ def build_flats(path: str | Path) -> dict[str, MasterFlat]:
     out: dict[str, MasterFlat] = {}
     for filt, frames in by_filter.items():
         data = np.median(np.stack([fr.data for fr in frames]), axis=0)
-        out[filt] = MasterFlat(data, _meta(frames[0]), f"{path} ({filt}, {len(frames)} frames)")
-        log.info("master flat [%s]: median of %d frames  %s",
-                 filt, len(frames), _describe(_meta(frames[0])))
+        debiased = False
+        if bias is not None and bias.data.shape == data.shape:
+            data = data - bias.data
+            debiased = True
+        out[filt] = MasterFlat(data, _meta(frames[0]),
+                               f"{path} ({filt}, {len(frames)} frames)")
+        log.info("master flat [%s]: median of %d frames  %s%s",
+                 filt, len(frames), _describe(_meta(frames[0])),
+                 "  (bias-subtracted)" if debiased else "")
     return out
 
 
@@ -175,17 +230,20 @@ class Calibrator:
     """Runs the enabled calibration steps on each incoming light frame."""
 
     def __init__(self, cfg: StackConfig, master_dark: MasterDark | None = None,
-                 flats: dict[str, MasterFlat] | None = None):
+                 flats: dict[str, MasterFlat] | None = None,
+                 master_bias: MasterBias | None = None):
         self.cfg = cfg
+        self.master_bias = master_bias
         self.master_dark = master_dark
         self.flats = flats or {}
+        self._bias_warned = False
         self._dark_warned = False
         self._flat_warned: set[str] = set()
 
     @property
     def active(self) -> bool:
-        return (self.master_dark is not None or bool(self.flats)
-                or self.cfg.hot_pixel_enabled)
+        return (self.master_bias is not None or self.master_dark is not None
+                or bool(self.flats) or self.cfg.hot_pixel_enabled)
 
     def _flat_for(self, frame: Frame) -> MasterFlat | None:
         if not self.flats:
@@ -198,6 +256,13 @@ class Calibrator:
 
     def apply(self, frame: Frame) -> np.ndarray:
         data = frame.data
+        if self.master_bias is not None:
+            if not self._bias_warned:
+                for msg in self.master_bias.warnings_for(frame):
+                    log.warning("master bias: %s", msg)
+                self._bias_warned = True
+            data = self.master_bias.subtract(data)
+
         if self.master_dark is not None:
             if not self._dark_warned:
                 for msg in self.master_dark.warnings_for(frame):

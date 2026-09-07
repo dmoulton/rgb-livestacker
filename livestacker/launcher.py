@@ -27,6 +27,7 @@ DEFAULTS = {
     "folder": "",
     "interval": 2.0,
     "catch_up": True,
+    "bias": "",
     "dark": "",
     "flat": "",
     "hot_pixel": True,
@@ -104,6 +105,7 @@ class Launcher:
             row=r, column=0, columnspan=3, sticky="w", pady=(0, 4)); r += 1
 
         cal_rows = (
+            ("bias", "Master bias", "a folder of bias subs, or one master FITS — also subtracted from the dark and flats"),
             ("dark", "Master dark", "a folder of dark subs (any filters), or one master FITS"),
             ("flat", "Master flat", "a folder of flat subs for every filter — sorted by FILTER, one master per channel"),
         )
@@ -210,7 +212,7 @@ class Launcher:
             cmd += ["--interval", self.v["interval"].get()]
         elif not self.v["catch_up"].get():
             cmd.append("--no-catch-up")
-        for key, flag in (("dark", "--dark"), ("flat", "--flat")):
+        for key, flag in (("bias", "--bias"), ("dark", "--dark"), ("flat", "--flat")):
             val = self.v[key].get().strip()
             if val:
                 cmd += [flag, val]

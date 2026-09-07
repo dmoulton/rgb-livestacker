@@ -57,6 +57,7 @@ command. (`--watch` recurses, so point it at NINA's image root.)
 | `--no-catch-up` | watch: ignore FITS already in the folder (default: stack them too, so a late start / restart doesn't lose subs) |
 | `--host 0.0.0.0` | expose to the LAN (default: localhost only) |
 | `--web-port` / `--ws-port` | ports (default 8080 / 8081) |
+| `--bias PATH` | master bias: a FITS file, or a folder of bias subs (also subtracted from the dark and flats) |
 | `--dark PATH` | master dark: a FITS file, or a folder of dark subs to median-combine |
 | `--flat PATH` | master flat(s): a FITS file, or a folder of raw flats (grouped by `FILTER`, one master per filter) |
 | `--no-hot-pixel` | disable per-frame hot/cold pixel correction (on by default) |
@@ -73,6 +74,9 @@ command. (`--watch` recurses, so point it at NINA's image root.)
 
 1. **Watch / replay** the folder; wait for each FITS file to finish writing.
 2. **Calibrate**, per light frame:
+   - master-bias subtraction (`--bias`); when given, the dark master and the
+     flats are bias-subtracted too, so an exposure-scaled dark is exact rather
+     than approximate;
    - master-dark subtraction (`--dark`), validated against the light's
      exposure / gain / binning / temperature, with warnings on a mismatch;
    - flat-field division (`--flat`), one master flat per `FILTER`, applied to

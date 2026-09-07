@@ -140,6 +140,7 @@
       <tr><td>Elapsed</td><td id="elapsed">0 s</td></tr>
       <tr><td>Hot-pixel fix</td><td id="cal-hot">–</td></tr>
       <tr><td>Sigma-clip</td><td id="cal-clip">–</td></tr>
+      <tr><td>Master bias</td><td id="cal-bias">–</td></tr>
       <tr><td>Master dark</td><td id="cal-dark">–</td></tr>
       <tr><td>Flat field</td><td id="cal-flat">–</td></tr>
       <tr><td>Background</td><td id="cal-bg">–</td></tr>
@@ -216,6 +217,7 @@ function renderStatus(s) {
     const c = s.calibration;
     $("cal-hot").textContent = c.hot_pixel ? "on" : "off";
     $("cal-clip").textContent = c.sigma_clip ? "on" : "off";
+    $("cal-bias").textContent = c.bias ? c.bias.replace(/^.*\//, "") : "none";
     $("cal-dark").textContent = c.dark ? c.dark.replace(/^.*\//, "") : "none";
     $("cal-flat").textContent = (c.flats && c.flats.length)
       ? c.flats.join(" ") : "none";

@@ -11,7 +11,7 @@ import asyncio
 import logging
 import sys
 
-from .calibration import Calibrator, MasterDark, build_flats
+from .calibration import Calibrator, MasterBias, MasterDark, build_flats
 from .config import StackConfig
 from .server import LiveStacker
 from .source import ReplaySource, WatchSource
@@ -40,6 +40,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--web-port", type=int, default=8080)
     p.add_argument("--ws-port", type=int, default=8081)
 
+    p.add_argument("--bias", metavar="PATH",
+                   help="master bias: a FITS file, or a folder of bias subs to "
+                        "median-combine (also subtracted from the dark and flats)")
     p.add_argument("--dark", metavar="PATH",
                    help="master dark: a FITS file, or a folder of dark subs to "
                         "median-combine")
@@ -96,10 +99,18 @@ def main(argv: list[str] | None = None) -> int:
         sigma_clip_kappa=args.sigma_clip_kappa,
     )
 
+    master_bias = None
+    if args.bias:
+        try:
+            master_bias = MasterBias.build(args.bias)
+        except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+            print(f"error: --bias {exc}", file=sys.stderr)
+            return 2
+
     master_dark = None
     if args.dark:
         try:
-            master_dark = MasterDark.build(args.dark)
+            master_dark = MasterDark.build(args.dark, master_bias)
         except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
             print(f"error: --dark {exc}", file=sys.stderr)
             return 2
@@ -107,12 +118,12 @@ def main(argv: list[str] | None = None) -> int:
     flats = None
     if args.flat:
         try:
-            flats = build_flats(args.flat)
+            flats = build_flats(args.flat, master_bias)
         except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
             print(f"error: --flat {exc}", file=sys.stderr)
             return 2
 
-    calibrator = Calibrator(cfg, master_dark, flats)
+    calibrator = Calibrator(cfg, master_dark, flats, master_bias)
 
     stacker = LiveStacker(cfg, args.host, args.ws_port, args.web_port, calibrator)
 

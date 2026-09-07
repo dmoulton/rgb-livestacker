@@ -179,10 +179,10 @@ class Pipeline:
             for name in names
         }
         total = sum(st.frames for st in self.channels.values())
-        dark = (self.calibrator.master_dark.source
-                if self.calibrator and self.calibrator.master_dark else None)
-        flats = (sorted(self.calibrator.flats)
-                 if self.calibrator and self.calibrator.flats else [])
+        cal = self.calibrator
+        bias = cal.master_bias.source if cal and cal.master_bias else None
+        dark = cal.master_dark.source if cal and cal.master_dark else None
+        flats = sorted(cal.flats) if cal and cal.flats else []
         return {
             "type": "status",
             "reference": self.reference_path,
@@ -190,6 +190,7 @@ class Pipeline:
             "calibration": {
                 "hot_pixel": self.cfg.hot_pixel_enabled,
                 "sigma_clip": self.cfg.sigma_clip_enabled,
+                "bias": bias,
                 "dark": dark,
                 "flats": flats,
                 "background": self.cfg.background_enabled,
