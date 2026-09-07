@@ -18,7 +18,7 @@ from PIL import Image
 
 from .accumulator import ChannelStack
 from .calibration import Calibrator
-from .config import StackConfig, StretchParams
+from .config import RGB_FILTERS, StackConfig, StretchParams
 from .fitsframe import Frame
 from .processing import (
     SceneModeler, apply_stretch, auto_stretch, combine_rgb,
@@ -146,13 +146,16 @@ class Pipeline:
     # -- status --------------------------------------------------------
 
     def status(self) -> dict:
+        # R, G, B first, then any other filters (L / narrowband) alphabetically
+        order = {f: i for i, f in enumerate(RGB_FILTERS)}
+        names = sorted(self.channels, key=lambda n: (order.get(n, len(order)), n))
         chans = {
             name: {
-                "frames": st.frames,
-                "last": st.last_path,
-                "clipped_px": st.rejected,
+                "frames": self.channels[name].frames,
+                "last": self.channels[name].last_path,
+                "clipped_px": self.channels[name].rejected,
             }
-            for name, st in sorted(self.channels.items())
+            for name in names
         }
         total = sum(st.frames for st in self.channels.values())
         dark = (self.calibrator.master_dark.source
