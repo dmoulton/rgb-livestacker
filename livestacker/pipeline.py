@@ -94,7 +94,9 @@ class Pipeline:
                             valid_fraction=float(valid.mean()))
 
     def _recombine(self) -> None:
-        data = {name: (st.mean, st.coverage, st.frames)
+        data = {name: (st.mean,
+                       st.covered_mask(self.cfg.coverage_min_frac),
+                       st.frames)
                 for name, st in self.channels.items()}
         rgb = combine_rgb(data, self.cfg, self._scene)
         with self._lock:

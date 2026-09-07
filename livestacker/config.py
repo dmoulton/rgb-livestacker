@@ -28,12 +28,18 @@ class StackConfig:
     # Trim this many px off the common-coverage edge before cropping the
     # preview, hiding the thin partial-coverage / amp-glow fringe.
     display_border_erode: int = 10
+    # A pixel is only shown once it has been covered by at least this fraction
+    # of a channel's frames. Without this, a strip that the dither pattern
+    # pushed the field off early on keeps a frozen, poorly-sampled value while
+    # the interior stacks deeper — showing up as a border that "grows" brighter
+    # as the rest of the frame gets cleaner.
+    coverage_min_frac: float = 0.6
     # Re-estimate a channel's background model only once its frame count has
     # advanced this far (the model changes slowly; the stretch does not).
     background_every_n_frames: int = 3
     # Bright-source rejection for the background estimate.
-    source_mask_nsigma: float = 2.5
-    source_mask_dilate: int = 8
+    source_mask_nsigma: float = 2.0
+    source_mask_dilate: int = 12
     # Enable background / gradient removal.
     background_enabled: bool = True
     # Automatic per-channel white balance. The preferred method detects stars
@@ -56,6 +62,11 @@ class StackConfig:
     sigma_clip_kappa: float = 3.0
     # Samples a pixel needs before it is eligible for clipping.
     sigma_clip_warmup: int = 6
+    # Only clip pixels whose running std is within this multiple of the sky
+    # noise. A trail / cosmic lands on an otherwise-quiet sky pixel and stands
+    # out; a star or edge pixel legitimately swings frame to frame (seeing,
+    # sub-pixel registration) and must be left alone or the PSF gets eaten.
+    sigma_clip_quiet_ratio: float = 2.5
     # Longest preview edge pushed over the socket, in pixels. Full-res stays
     # available through the /snapshot endpoint.
     preview_max_px: int = 1600

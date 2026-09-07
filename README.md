@@ -73,10 +73,12 @@ Then open <http://localhost:8080/>.
 5. **Stack**: per-pixel running mean (Welford) with a rolling sigma-clip — an
    incoming value more than `kappa` sigma from the running mean is dropped for
    that pixel, rejecting satellite / aircraft trails and cosmics that land in a
-   single frame. Per-pixel coverage is tracked so partially-overlapping
-   (dithered / flipped) frames still contribute; the combined result is cropped
-   to the region every channel covers, so the ragged dither border never
-   appears.
+   single frame. Only normally-quiet (sky) pixels are eligible, so the clip
+   never eats a star PSF that legitimately swings frame to frame. Per-pixel
+   coverage is tracked so partially-overlapping (dithered / flipped) frames
+   still contribute; the combined result is cropped to the region every channel
+   covers *by a healthy fraction of its frames*, so the ragged dither border —
+   and a strip the field drifted off early — never appear.
 6. **Background**: a `photutils` `Background2D` surface per channel —
    sigma-clipped per mesh cell, with bright sources and the frame border
    masked out, so the nebula does not bias its own background. Gated on a

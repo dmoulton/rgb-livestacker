@@ -49,14 +49,26 @@ class ChannelStack:
                 dev = np.abs(x - self._mean)
                 with np.errstate(invalid="ignore", divide="ignore"):
                     local = np.sqrt(self._m2 / np.maximum(self._count - 1, 1))
-                # Floor the per-pixel std at the frame's global sky noise, so a
-                # pixel whose std is under-estimated from a handful of samples
-                # doesn't reject normal scatter. Median over `ready` pixels is
-                # robust to the small fraction that are stars.
-                r = dev[ready]
-                floor = 1.4826 * float(np.median(r)) if r.size else 0.0
-                sigma = np.maximum(local, floor)
-                reject = ready & (sigma > 0) & (dev > cfg.sigma_clip_kappa * sigma)
+
+                # Sky read+shot noise: the running std of the dimmer pixels
+                # (the bright fraction is stars / galaxy and must not define
+                # "noise", especially in a crowded field).
+                dim = self._mean <= np.percentile(self._mean[ready], 70.0)
+                base = local[ready & dim]
+                sky_noise = float(np.median(base)) if base.size else 0.0
+                sigma = np.maximum(local, sky_noise)
+
+                # Only clip pixels that are normally quiet. A trail / cosmic
+                # lands on a flat sky pixel (running std ~ sky noise) and is a
+                # huge outlier; a star / edge pixel swings every frame (seeing,
+                # sub-pixel registration) so its running std sits well above
+                # the sky — exclude it, or sigma-clip eats the PSF.
+                if sky_noise > 0:
+                    quiet = local < cfg.sigma_clip_quiet_ratio * sky_noise
+                else:
+                    quiet = np.ones_like(local, dtype=bool)
+                reject = (ready & quiet & (sigma > 0)
+                          & (dev > cfg.sigma_clip_kappa * sigma))
                 n_rej = int(reject.sum())
                 if n_rej:
                     self.rejected += n_rej
@@ -76,6 +88,14 @@ class ChannelStack:
         if self._count is None:
             return None
         return self._count > 0
+
+    def covered_mask(self, min_frac: float) -> np.ndarray | None:
+        """Boolean mask: pixels covered by at least `min_frac` of this channel's
+        frames (always at least one). Excludes the under-sampled dither fringe."""
+        if self._count is None:
+            return None
+        need = max(1, int(round(min_frac * self.frames)))
+        return self._count >= need
 
     @property
     def mean(self) -> np.ndarray | None:
