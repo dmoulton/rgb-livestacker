@@ -30,6 +30,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="replay: seconds between frames (default: 2)")
     p.add_argument("--limit", type=int, default=None,
                    help="replay: stop after N frames")
+    p.add_argument("--no-catch-up", action="store_true",
+                   help="watch: don't ingest FITS already in the folder at "
+                        "startup (default: do, so a late start / restart keeps "
+                        "the subs on disk)")
 
     p.add_argument("--host", default="127.0.0.1",
                    help="bind address (default: 127.0.0.1; use 0.0.0.0 for LAN)")
@@ -113,7 +117,8 @@ def main(argv: list[str] | None = None) -> int:
     stacker = LiveStacker(cfg, args.host, args.ws_port, args.web_port, calibrator)
 
     if args.watch:
-        source = WatchSource(args.watch, stacker.submit_file)
+        source = WatchSource(args.watch, stacker.submit_file,
+                             catch_up=not args.no_catch_up)
     else:
         source = ReplaySource(args.replay, stacker.submit_file,
                               interval=args.interval, limit=args.limit)

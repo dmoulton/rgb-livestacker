@@ -58,6 +58,23 @@ class Pipeline:
 
     # -- ingestion ---------------------------------------------------------
 
+    def _register(self, data: np.ndarray):
+        """Align `data` to the reference. `astroalign`'s triangle matching is
+        rotation-invariant, so a meridian flip needs nothing special — but a
+        thin-cloud / soft-focus frame can still starve the star detector, so
+        drop the detection threshold and retry before giving up."""
+        last = None
+        for det_sigma in (5, 3, 2):
+            try:
+                registered, _ = aa.register(
+                    data, self.reference, fill_value=np.nan,
+                    detection_sigma=det_sigma,
+                )
+                return registered, None
+            except Exception as exc:  # too few stars, no transform, etc.
+                last = exc
+        return None, last
+
     def ingest(self, frame: Frame) -> IngestResult:
         ch = self.channels.setdefault(
             frame.filter, ChannelStack(frame.filter, self.cfg))
@@ -71,12 +88,8 @@ class Pipeline:
             aligned, valid = data, np.ones(data.shape, bool)
             log.info("reference set from %s (%s)", frame.path.name, frame.filter)
         else:
-            try:
-                aligned, _footprint = aa.register(
-                    data, self.reference, fill_value=np.nan,
-                    detection_sigma=5,
-                )
-            except Exception as exc:  # too few stars, no transform, etc.
+            aligned, exc = self._register(data)
+            if aligned is None:
                 self.rejected += 1
                 return IngestResult(False, frame.filter, frame.path.name,
                                     f"registration failed: {exc}")

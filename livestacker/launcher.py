@@ -26,6 +26,7 @@ DEFAULTS = {
     "mode": "watch",
     "folder": "",
     "interval": 2.0,
+    "catch_up": True,
     "dark": "",
     "flat": "",
     "hot_pixel": True,
@@ -88,6 +89,13 @@ class Launcher:
         ttk.Spinbox(self.interval_row, from_=0.1, to=30, increment=0.1, width=6,
                     textvariable=self.v["interval"]).pack(side="left", padx=6)
         ttk.Label(self.interval_row, text="seconds per frame").pack(side="left")
+        r += 1
+
+        self.catchup_row = ttk.Frame(frm)
+        self.catchup_row.grid(row=r, column=0, columnspan=3, sticky="w", **pad)
+        ttk.Checkbutton(self.catchup_row, variable=self.v["catch_up"],
+                        text="Also stack subs already in the folder "
+                             "(covers a late start / restart)").pack(side="left")
         r += 1
 
         ttk.Separator(frm, orient="horizontal").grid(
@@ -157,6 +165,8 @@ class Launcher:
         replay = self.v["mode"].get() == "replay"
         for child in self.interval_row.winfo_children():
             child.configure(state="normal" if replay else "disabled")
+        for child in self.catchup_row.winfo_children():
+            child.configure(state="disabled" if replay else "normal")
 
     def _pick_dir(self, key: str) -> None:
         d = filedialog.askdirectory(title="Choose folder",
@@ -198,6 +208,8 @@ class Launcher:
         cmd += [f"--{self.v['mode'].get()}", folder]
         if self.v["mode"].get() == "replay":
             cmd += ["--interval", self.v["interval"].get()]
+        elif not self.v["catch_up"].get():
+            cmd.append("--no-catch-up")
         for key, flag in (("dark", "--dark"), ("flat", "--flat")):
             val = self.v[key].get().strip()
             if val:

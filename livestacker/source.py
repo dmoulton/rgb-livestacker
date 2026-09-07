@@ -48,6 +48,15 @@ def _wait_until_stable(path: Path, timeout: float = 30.0, settle: float = 1.0) -
     return False
 
 
+def _key(path: Path) -> str:
+    """A stable identity for a path, robust to symlinked parents (e.g. macOS
+    /var -> /private/var, which watchdog and rglob disagree on)."""
+    try:
+        return str(path.resolve())
+    except OSError:
+        return str(path)
+
+
 class _Handler(FileSystemEventHandler):
     def __init__(self, on_file: Callable[[Path], None]):
         self._on_file = on_file
@@ -55,9 +64,10 @@ class _Handler(FileSystemEventHandler):
 
     def _consider(self, raw_path: str) -> None:
         path = Path(raw_path)
-        if not _is_fits(path) or raw_path in self._seen:
+        key = _key(path)
+        if not _is_fits(path) or key in self._seen:
             return
-        self._seen.add(raw_path)
+        self._seen.add(key)
         if _wait_until_stable(path):
             self._on_file(path)
         else:
@@ -73,22 +83,52 @@ class _Handler(FileSystemEventHandler):
 
 
 class WatchSource:
-    """Live folder watch (recursive)."""
+    """Live folder watch (recursive).
 
-    def __init__(self, folder: str | Path, on_file: Callable[[Path], None]):
+    With `catch_up`, every FITS already in the folder is ingested first (in
+    filename order) before new arrivals are handled — so starting late, or
+    restarting after a crash, doesn't throw away subs that are on disk.
+    """
+
+    def __init__(self, folder: str | Path, on_file: Callable[[Path], None],
+                 catch_up: bool = True):
         self.folder = Path(folder)
         self._on_file = on_file
+        self.catch_up = catch_up
+        self._handler = _Handler(on_file)
         self._observer = Observer()
+        self._stop = threading.Event()
 
     def start(self) -> None:
         if not self.folder.is_dir():
             raise NotADirectoryError(self.folder)
-        self._observer.schedule(_Handler(self._on_file), str(self.folder),
-                                recursive=True)
+
+        # Snapshot what's already there and mark it seen *before* the observer
+        # starts, so a replayed / coalesced create event (macOS FSEvents does
+        # this) can't double-ingest it.
+        existing = sorted((p for p in self.folder.rglob("*") if _is_fits(p)),
+                          key=lambda p: p.name)
+        for path in existing:
+            self._handler._seen.add(_key(path))
+
+        self._observer.schedule(self._handler, str(self.folder), recursive=True)
         self._observer.start()
         log.info("watching %s", self.folder)
 
+        if self.catch_up and existing:
+            threading.Thread(target=self._ingest_existing, args=(existing,),
+                             daemon=True).start()
+
+    def _ingest_existing(self, files: list[Path]) -> None:
+        log.info("catch-up: ingesting %d file(s) already in the folder", len(files))
+        for path in files:
+            if self._stop.is_set():
+                return
+            self._on_file(path)
+        log.info("catch-up done")
+
     def stop(self) -> None:
+        self._stop.set()
         self._observer.stop()
         self._observer.join(timeout=5)
 

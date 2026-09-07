@@ -93,13 +93,19 @@ def star_flux_scales(channels: dict[str, np.ndarray], valid: np.ndarray,
     if tbl is None or len(tbl) < cfg.wb_min_stars:
         return None
 
+    def col(*names: str) -> np.ndarray:
+        for n in names:                       # photutils renamed these in 3.0
+            if n in tbl.colnames:
+                return np.asarray(tbl[n], dtype=float)
+        raise KeyError(names)
+
     # keep round, well-sampled, non-edge sources in a sane brightness band
-    x = np.asarray(tbl["xcentroid"], dtype=float)
-    y = np.asarray(tbl["ycentroid"], dtype=float)
-    flux = np.asarray(tbl["flux"], dtype=float)
-    r1 = np.asarray(tbl["roundness1"], dtype=float)
-    r2 = np.asarray(tbl["roundness2"], dtype=float)
-    sharp = np.asarray(tbl["sharpness"], dtype=float)
+    x = col("x_centroid", "xcentroid")
+    y = col("y_centroid", "ycentroid")
+    flux = col("flux")
+    r1 = col("roundness1")
+    r2 = col("roundness2")
+    sharp = col("sharpness")
     h, w = lum.shape
     m = cfg.wb_fwhm * 3.0
     good = (

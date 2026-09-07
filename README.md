@@ -54,6 +54,7 @@ command. (`--watch` recurses, so point it at NINA's image root.)
 | `--watch DIR` / `--replay DIR` | live folder watch, or replay an existing one |
 | `--interval N` | replay pacing, seconds per frame (default 2) |
 | `--limit N` | replay only the first N frames |
+| `--no-catch-up` | watch: ignore FITS already in the folder (default: stack them too, so a late start / restart doesn't lose subs) |
 | `--host 0.0.0.0` | expose to the LAN (default: localhost only) |
 | `--web-port` / `--ws-port` | ports (default 8080 / 8081) |
 | `--dark PATH` | master dark: a FITS file, or a folder of dark subs to median-combine |
@@ -105,8 +106,20 @@ command. (`--watch` recurses, so point it at NINA's image root.)
 9. **Linked stretch**: one black/midtones/gamma/contrast curve through all
    three channels, applied live in the browser without re-stacking.
 
+## Tests
+
+```bash
+.venv/bin/python -m pytest -q          # needs requirements-dev.txt
+```
+
+The meridian-flip test uses whatever session with a pier-side change it finds
+under `~/Pictures/astro/nina` (override with `NINA_DIR`); it skips if there
+isn't one.
+
 ## Status / roadmap
 
-Working. Not yet done: affine / distortion registration (residual star smear on
-very low-altitude targets), background-model smoothing early in a session, LRGB
-(luminance) support, meridian-flip robustness, PyInstaller packaging.
+Working, including across a meridian flip (`astroalign` is rotation-invariant
+and a 180°-rotated sensor covers the same footprint). Not yet done: affine /
+distortion registration (residual star smear on very low-altitude targets),
+background-model smoothing early in a session, LRGB (luminance) support,
+PyInstaller packaging.
