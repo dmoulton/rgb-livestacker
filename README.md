@@ -12,27 +12,38 @@ for the reasoning behind the design.
 
 ## Setup
 
+Needs Python 3.11+ ([python.org](https://www.python.org/downloads/); on Windows
+tick "Add python.exe to PATH").
+
+**macOS / Linux** — in a terminal, from this folder:
+
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+./install.sh
 ```
+
+**Windows** — double-click `install.bat` (or run it from a command prompt).
+
+That creates a `.venv` here and installs everything. Run it once; re-run only
+after pulling new code.
 
 ## Usage
 
-Replay an existing session (no rig needed — great for testing):
+**macOS / Linux:**
 
 ```bash
-python -m livestacker --replay "/path/to/old/session" --interval 1.5
+./livestack.sh --replay "/path/to/old/session"     # test on old data, no rig
+./livestack.sh --watch  "/path/to/capture/folder"  # live
 ```
 
-Watch a live capture folder:
+**Windows:**
 
-```bash
-python -m livestacker --watch "/path/to/capture/folder"
+```bat
+livestack.bat --replay "C:\path\to\old\session"
+livestack.bat --watch  "C:\path\to\NINA\Images"
 ```
 
-Then open <http://localhost:8080/>.
+Then open <http://localhost:8080/>. Any option below can be added to the
+command. (`--watch` recurses, so point it at NINA's image root.)
 
 ### Options
 
