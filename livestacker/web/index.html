@@ -44,12 +44,19 @@
     min-width: 46px; text-align: center; font-size: 12px;
   }
   aside {
-    width: 300px; flex-shrink: 0; background: var(--panel);
+    width: 340px; flex-shrink: 0; background: var(--panel);
     border-left: 1px solid var(--line); padding: 18px 18px 24px;
-    overflow-y: auto;
+    overflow-y: auto; overflow-x: hidden; overflow-wrap: anywhere;
+  }
+  body.nosidebar aside { display: none; }
+  #sidebar-toggle {
+    position: absolute; top: 8px; right: 8px; z-index: 10;
+    width: 30px; height: 30px; padding: 0; line-height: 1; font-size: 16px;
+    background: rgba(12,15,20,.78); border: 1px solid var(--line);
+    border-radius: 6px; color: var(--text); backdrop-filter: blur(4px);
   }
   h1 { font-size: 15px; margin: 0 0 4px; letter-spacing: .3px; }
-  .sub { color: var(--dim); font-size: 12px; margin-bottom: 18px; }
+  .sub { color: var(--dim); font-size: 12px; margin-bottom: 18px; overflow-wrap: anywhere; }
   h2 {
     font-size: 11px; text-transform: uppercase; letter-spacing: .8px;
     color: var(--dim); margin: 22px 0 10px; font-weight: 600;
@@ -66,8 +73,8 @@
     font: inherit; cursor: pointer; text-decoration: none;
   }
   button:hover, a.btn:hover { border-color: var(--accent); }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  td { padding: 3px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+  td { padding: 3px 0; overflow-wrap: anywhere; vertical-align: top; }
   td:last-child { text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; }
   .chan-R { color: #ff6b6b; } .chan-G { color: #59d98b; } .chan-B { color: #5aa9ff; }
   #conn { font-size: 12px; color: var(--dim); margin-top: 20px; }
@@ -77,6 +84,7 @@
 </head>
 <body>
   <div id="stage">
+    <button id="sidebar-toggle" title="Hide / show the panel">›</button>
     <img id="preview" alt="" hidden>
     <div id="empty">Waiting for the first stacked frame…</div>
     <div id="zoomctl">
@@ -327,13 +335,32 @@ $("zoom-out").addEventListener("click", () => zoomCentre(1 / 1.4));
 $("zoom-fit").addEventListener("click", resetView);
 
 window.addEventListener("keydown", (e) => {
-  if (e.target.tagName === "INPUT" || preview.hidden) return;
+  if (e.target.tagName === "INPUT") return;
+  if (e.key === "\\") { toggleSidebar(); return; }
+  if (preview.hidden) return;
   if (e.key === "+" || e.key === "=") zoomCentre(1.4);
   else if (e.key === "-" || e.key === "_") zoomCentre(1 / 1.4);
   else if (e.key === "0") resetView();
 });
 
 window.addEventListener("resize", () => { clampView(); applyView(); });
+
+/* ---- sidebar show / hide ------------------------------------------------ */
+function setSidebar(hidden) {
+  document.body.classList.toggle("nosidebar", hidden);
+  $("sidebar-toggle").textContent = hidden ? "‹" : "›";
+  $("sidebar-toggle").title = (hidden ? "Show" : "Hide") + " the panel  (\\)";
+  try { localStorage.setItem("ls.sidebar", hidden ? "hidden" : "shown"); } catch (_) {}
+  // the stage width changed — re-fit / re-clamp the preview
+  requestAnimationFrame(() => { clampView(); applyView(); });
+}
+function toggleSidebar() {
+  setSidebar(!document.body.classList.contains("nosidebar"));
+}
+$("sidebar-toggle").addEventListener("click", toggleSidebar);
+try {
+  if (localStorage.getItem("ls.sidebar") === "hidden") setSidebar(true);
+} catch (_) {}
 
 function connect() {
   ws = new WebSocket(`ws://${location.hostname}:${WS_PORT}`);
