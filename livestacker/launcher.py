@@ -314,7 +314,7 @@ class Launcher:
 
     def _load(self) -> None:
         try:
-            data = json.loads(SETTINGS.read_text())
+            data = json.loads(SETTINGS.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return
         for k, var in self.v.items():
@@ -340,7 +340,7 @@ class Launcher:
             else:
                 data[k] = val
         try:
-            SETTINGS.write_text(json.dumps(data, indent=2))
+            SETTINGS.write_text(json.dumps(data, indent=2), encoding="utf-8")
         except OSError:
             pass
 

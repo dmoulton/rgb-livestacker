@@ -170,7 +170,7 @@ class LiveStacker:
                     self.path = "/index.html"
                 # inject the ws port so the page knows where to connect
                 if self.path == "/index.html":
-                    html = (WEB_ROOT / "index.html").read_text()
+                    html = (WEB_ROOT / "index.html").read_text(encoding="utf-8")
                     html = html.replace("{{WS_PORT}}", str(stacker.ws_port))
                     body = html.encode()
                     self.send_response(200)
