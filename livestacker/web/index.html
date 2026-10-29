@@ -276,8 +276,18 @@ function renderStatus(s) {
     : n >= 1e3 ? (n / 1e3).toFixed(0) + "k" : String(n);
   for (const [name, c] of Object.entries(s.channels)) {
     const tr = document.createElement("tr");
-    const clip = c.clipped_px ? ` <span style="color:var(--dim)">(${fmt(c.clipped_px)} clipped)</span>` : "";
-    tr.innerHTML = `<td class="chan-${name}">${name}</td><td>${c.frames}${clip}</td>`;
+    const th = document.createElement("td");
+    th.textContent = name;
+    if (/^[RGB]$/.test(name)) th.className = "chan-" + name;   // never build markup from a header value
+    const td = document.createElement("td");
+    td.textContent = String(c.frames);
+    if (c.clipped_px) {
+      const clip = document.createElement("span");
+      clip.style.color = "var(--dim)";
+      clip.textContent = ` (${fmt(c.clipped_px)} clipped)`;
+      td.appendChild(clip);
+    }
+    tr.append(th, td);
     body.appendChild(tr);
   }
   // when Auto is on, show the numbers the server actually used
@@ -288,12 +298,21 @@ function renderStatus(s) {
   }
 }
 
+let pendingUrl = null;
 function showPreview(blob) {
-  const url = URL.createObjectURL(blob);
+  // a newer image can arrive before the previous one finished loading; that
+  // load is abandoned, so free its URL here or it leaks
+  if (pendingUrl) URL.revokeObjectURL(pendingUrl);
+  const url = pendingUrl = URL.createObjectURL(blob);
   preview.onload = () => {
     if (lastUrl) URL.revokeObjectURL(lastUrl);
     lastUrl = url;
+    pendingUrl = null;
     applyView();          // size / crispness depend on what actually arrived
+  };
+  preview.onerror = () => {
+    URL.revokeObjectURL(url);
+    if (pendingUrl === url) pendingUrl = null;
   };
   preview.src = url;
   preview.hidden = false;
