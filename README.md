@@ -123,7 +123,14 @@ its own preview, so moving a slider in one never changes another's picture. The
    matching when too few stars are found.
 8. **Combine** to linear RGB. If a luminance (`L`) channel is present, its
    stack replaces the brightness of the RGB while the colour is kept (LRGB),
-   blended by a live slider.
+   blended by a live slider. The colour comes from a slightly blurred copy of
+   the RGB stack (colour noise is far less visible than brightness noise) and
+   fades to neutral grey where the RGB has no signal, so dark sky isn't
+   speckled; Auto stretch uses statistics of the L-carrying image when it's shown.
+   While a backlog of subs is queued (a catch-up, a fast replay) the combined
+   image is rebuilt when the queue drains or every 10 s, not after every sub, and
+   slider moves are rendered on their own thread so they stay responsive.
+   Dark / flat / bias frames found in a watched tree (by `IMAGETYP`) are skipped.
 9. **Linked stretch**: one black/midtones/gamma/contrast curve through all
    three channels, plus an optional green-noise (SCNR) slider, applied live in
    the browser without re-stacking.

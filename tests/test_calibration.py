@@ -82,3 +82,19 @@ def test_no_bias_still_works(frames):
                      build_flats(frames / "flat"))
     out = cal.apply(load_frame(frames / "light.fits"))
     assert abs(np.median(out) - 1000.0) < 25
+
+
+def test_median_combine_matches_full_median_and_rejects_size_mismatch(tmp_path):
+    from livestacker.fitsframe import median_combine
+    rng = np.random.default_rng(3)
+    arrs = [rng.normal(100, 10, (H, W)).astype("float32") for _ in range(5)]
+    paths = []
+    for i, a in enumerate(arrs):
+        _write(tmp_path / f"m{i}.fits", a, 1.0)
+        paths.append(tmp_path / f"m{i}.fits")
+    got = median_combine(paths, strip_rows=7)            # strips that don't divide H
+    assert np.array_equal(got, np.median(np.stack(arrs), axis=0).astype("float32"))
+
+    _write(tmp_path / "odd.fits", np.zeros((H + 1, W)), 1.0)
+    with pytest.raises(ValueError, match="differ in size"):
+        median_combine(paths + [tmp_path / "odd.fits"])

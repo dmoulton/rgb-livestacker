@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 from scipy.ndimage import median_filter
 
-from .fitsframe import Frame, load_frame
+from .fitsframe import Frame, load_frame, median_combine, read_header
 from .config import StackConfig
 
 log = logging.getLogger("livestacker.calibration")
@@ -56,9 +56,8 @@ def _combine(path: str | Path) -> tuple[np.ndarray, dict, str]:
         files = sorted(p for p in path.rglob("*") if p.suffix.lower() in FITS_SUFFIXES)
         if not files:
             raise FileNotFoundError(f"no FITS files under {path}")
-        frames = [load_frame(f) for f in files]
-        data = np.median(np.stack([f.data for f in frames]), axis=0)
-        return data, _meta(frames[0]), f"{path} ({len(files)} frames)"
+        data = median_combine(files)
+        return data, _meta(read_header(files[0])[0]), f"{path} ({len(files)} frames)"
     frame = load_frame(path)
     return frame.data, _meta(frame), str(path)
 
@@ -196,12 +195,12 @@ def build_flats(path: str | Path,
 
     by_filter: dict[str, list[Frame]] = collections.defaultdict(list)
     for f in files:
-        fr = load_frame(f)
+        fr = read_header(f)[0]
         by_filter[fr.filter].append(fr)
 
     out: dict[str, MasterFlat] = {}
     for filt, frames in by_filter.items():
-        data = np.median(np.stack([fr.data for fr in frames]), axis=0)
+        data = median_combine([fr.path for fr in frames])
         debiased = False
         if bias is not None and bias.data.shape == data.shape:
             data = data - bias.data
