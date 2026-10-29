@@ -3,6 +3,7 @@ scipy>=1.10
 astropy>=6
 photutils>=1.10
 astroalign>=2.5
+sep>=1.2
 watchdog>=3
 Pillow>=10
 websockets>=12

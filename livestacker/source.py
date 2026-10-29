@@ -159,6 +159,8 @@ class ReplaySource:
         )
         if self.limit:
             files = files[: self.limit]
+        if not files:
+            log.warning("no FITS files found under %s", self.folder)
         log.info("replaying %d files from %s every %.1fs",
                  len(files), self.folder, self.interval)
         for path in files:

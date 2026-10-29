@@ -111,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.bias:
         try:
             master_bias = MasterBias.build(args.bias)
-        except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+        except (OSError, ValueError) as exc:
             print(f"error: --bias {exc}", file=sys.stderr)
             return 2
 
@@ -119,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.dark:
         try:
             master_dark = MasterDark.build(args.dark, master_bias)
-        except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+        except (OSError, ValueError) as exc:
             print(f"error: --dark {exc}", file=sys.stderr)
             return 2
 
@@ -127,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.flat:
         try:
             flats = build_flats(args.flat, master_bias)
-        except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+        except (OSError, ValueError) as exc:
             print(f"error: --flat {exc}", file=sys.stderr)
             return 2
 

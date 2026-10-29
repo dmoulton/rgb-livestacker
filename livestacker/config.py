@@ -7,6 +7,7 @@ payload passed around between the web UI and the pipeline.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, asdict, replace
 
 
@@ -79,8 +80,14 @@ class StackConfig:
     preview_max_px: int = 1600
     # Don't re-encode the preview more often than this (seconds).
     min_preview_interval: float = 0.5
+    # While a backlog of frames is queued (catch-up, fast replay) the combined
+    # image is only rebuilt this often (seconds) instead of after every sub.
+    backlog_refresh_s: float = 10.0
     # Discard a frame whose valid (aligned) area is below this fraction.
     min_valid_fraction: float = 0.5
+    # The first frame becomes the registration reference for the whole session,
+    # so it must actually contain stars (not a flat, a cloudy frame, ...).
+    min_reference_stars: int = 8
 
 
 @dataclass
@@ -103,5 +110,26 @@ class StretchParams:
 
     @classmethod
     def from_json(cls, data: dict) -> "StretchParams":
-        fields = {f: data[f] for f in cls().to_json() if f in data}
+        """Build from untrusted input (a browser's websocket message or a URL
+        query): ignore anything that isn't the right type or isn't finite, and
+        clamp the rest to a sane range, so one bad client can't break a render."""
+        fields = {}
+        for name, default in cls().to_json().items():
+            if name not in data:
+                continue
+            v = data[name]
+            if isinstance(default, bool):
+                if isinstance(v, (bool, int)):
+                    fields[name] = bool(v)
+            elif isinstance(v, (int, float)) and not isinstance(v, bool) \
+                    and math.isfinite(v):
+                lo, hi = _LIMITS[name]
+                fields[name] = min(hi, max(lo, float(v)))
         return replace(cls(), **fields)
+
+
+# Accepted range of each numeric display setting (a superset of the page's sliders).
+_LIMITS = {
+    "black": (0.0, 0.98), "midtones": (0.01, 0.99), "gamma": (0.1, 5.0),
+    "contrast": (0.1, 4.0), "green": (0.0, 1.0), "lum": (0.0, 1.0),
+}

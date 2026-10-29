@@ -7,11 +7,17 @@ own `StretchParams`, and each is sent a preview rendered with its own settings.
 
 Layout of moving parts:
 
-    source thread ─┐
-                   ├─► job queue ─► worker thread ─► Pipeline
-   websocket in  ──┘                     │
-                                         ▼
-                   asyncio loop ◄── threadsafe send ─► websocket clients
+    source thread ─► frame queue ─► frame worker ─► Pipeline (stack)
+                                                       │
+    websocket in ─► settings ─► render thread ─────────┤  (reads the latest stack)
+                                      │                │
+                   asyncio loop ◄── threadsafe send ◄──┘
+                         │
+                         └─► websocket clients
+
+Frames and renders run on separate threads so a slider move is answered
+immediately even while a backlog of subs (a catch-up, a fast replay) is being
+stacked.
 """
 
 from __future__ import annotations
@@ -36,6 +42,7 @@ from .pipeline import Pipeline
 log = logging.getLogger("livestacker.server")
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
+STALLED_BYTES = 32 * 1024 * 1024      # unsent data after which a browser is skipped
 
 
 def params_from_query(query: str) -> StretchParams:
@@ -70,37 +77,50 @@ class LiveStacker:
         self.web_port = web_port
 
         self.pipeline = Pipeline(cfg, calibrator)
-        self._jobs: "queue.Queue[tuple[str, object]]" = queue.Queue()
+        self._frames: "queue.Queue[Path]" = queue.Queue()
+        self._pending = 0                  # frames submitted and not yet finished
+        self._pending_lock = threading.Lock()
+        self._stale = False                # frames stacked since the last recombine
+        self._last_recombine_at = time.time()
         # connected browsers -> their own display settings. Mutated on the
-        # event-loop thread, read by the worker thread, hence the lock.
+        # event-loop thread, read by the worker threads, hence the lock.
         self._clients: dict = {}
         self._dirty: set = set()           # clients owed a fresh render
         self._clients_lock = threading.Lock()
+        self._render_wake = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._last_preview_at = 0.0
         self._worker = threading.Thread(target=self._worker_loop, daemon=True)
+        self._renderer = threading.Thread(target=self._render_loop, daemon=True)
         self._stop = threading.Event()
 
     # -- public API used by the frame source --------------------------------
 
     def submit_file(self, path: Path) -> None:
-        self._jobs.put(("frame", path))
+        with self._pending_lock:
+            self._pending += 1
+        self._frames.put(Path(path))
 
-    # -- worker thread -----------------------------------------------------
+    def _backlog(self) -> bool:
+        """True while more frames are queued behind the one being handled."""
+        with self._pending_lock:
+            return self._pending > 1
+
+    # -- frame worker thread -----------------------------------------------
 
     def _worker_loop(self) -> None:
         while not self._stop.is_set():
             try:
-                kind, payload = self._jobs.get(timeout=0.5)
+                path = self._frames.get(timeout=0.5)
             except queue.Empty:
                 continue
             try:
-                if kind == "frame":
-                    self._handle_frame(Path(payload))
-                elif kind == "render":
-                    self._render_dirty()
+                self._handle_frame(path)
             except Exception:
-                log.exception("worker job failed (%s)", kind)
+                log.exception("frame job failed (%s)", path.name)
+            finally:
+                with self._pending_lock:
+                    self._pending -= 1
 
     def _handle_frame(self, path: Path) -> None:
         try:
@@ -108,14 +128,42 @@ class LiveStacker:
         except Exception as exc:
             log.warning("skip %s: %s", path.name, exc)
             return
-        result = self.pipeline.ingest(frame)
+        # Don't rebuild the combined image after every sub of a backlog (catch-up,
+        # fast replay) — only when the queue drains, and at least every few
+        # seconds so progress stays visible.
+        result = self.pipeline.ingest(frame, recombine=False)
         if result.ok:
+            self._stale = True
             log.info("stacked %s  [%s]  overlap %.0f%%",
                      path.name, result.filter, result.valid_fraction * 100)
+        elif result.skipped:
+            log.info("%s %s", path.name, result.message)
         else:
             log.warning("rejected %s: %s", path.name, result.message)
-        self._push_preview()
+
+        now = time.time()
+        if self._stale and (not self._backlog()
+                            or now - self._last_recombine_at >= self.cfg.backlog_refresh_s):
+            self.pipeline.recombine()
+            self._stale = False
+            self._last_recombine_at = now
+            try:
+                self._push_preview()
+            except Exception:
+                log.exception("preview refresh failed")
         self._broadcast_status()
+
+    # -- render thread -------------------------------------------------------
+
+    def _render_loop(self) -> None:
+        while not self._stop.is_set():
+            if not self._render_wake.wait(0.5):
+                continue
+            self._render_wake.clear()
+            try:
+                self._render_dirty()
+            except Exception:
+                log.exception("render failed")
 
     # -- preview / status broadcasting ------------------------------------
 
@@ -127,7 +175,11 @@ class LiveStacker:
         for ws, params in targets:
             key = _params_key(params)
             if key not in rendered:
-                rendered[key] = self.pipeline.render_preview(params)
+                try:
+                    rendered[key] = self.pipeline.render_preview(params)
+                except Exception as exc:     # one browser's settings must not
+                    log.warning("render failed for a browser's settings: %s", exc)
+                    rendered[key] = None     # starve the others
             if rendered[key] is not None:
                 self._threadsafe(self._send_one, ws, rendered[key])
 
@@ -156,7 +208,7 @@ class LiveStacker:
     def _mark_dirty(self, ws) -> None:
         with self._clients_lock:
             self._dirty.add(ws)
-        self._jobs.put(("render", None))
+        self._render_wake.set()
 
     def _broadcast_status(self) -> None:
         self._threadsafe(self._broadcast_text,
@@ -166,12 +218,21 @@ class LiveStacker:
         if self._loop is not None:
             self._loop.call_soon_threadsafe(fn, *args)
 
+    @staticmethod
+    def _stalled(ws) -> bool:
+        """A browser that has stopped reading (background tab, bad link):
+        `broadcast` never waits, so anything sent to it just piles up in memory."""
+        transport = getattr(ws, "transport", None)
+        return (transport is not None
+                and transport.get_write_buffer_size() > STALLED_BYTES)
+
     def _send_one(self, ws, data: bytes) -> None:
-        websockets.broadcast([ws], data)
+        if not self._stalled(ws):
+            websockets.broadcast([ws], data)
 
     def _broadcast_text(self, text: str) -> None:
         with self._clients_lock:
-            clients = list(self._clients)
+            clients = [c for c in self._clients if not self._stalled(c)]
         websockets.broadcast(clients, text)
 
     # -- websocket handler ----------------------------------------------
@@ -260,13 +321,16 @@ class LiveStacker:
     async def run(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._worker.start()
+        self._renderer.start()
         threading.Thread(target=self._serve_http, daemon=True).start()
 
+        # the page only ever sends small JSON settings messages
         async with websockets.serve(self._ws_handler, self.host, self.ws_port,
-                                    max_size=None):
+                                    max_size=64 * 1024):
             log.info("websocket on ws://%s:%d", self.host or "localhost",
                      self.ws_port)
             await asyncio.Future()  # run forever
 
     def shutdown(self) -> None:
         self._stop.set()
+        self._render_wake.set()

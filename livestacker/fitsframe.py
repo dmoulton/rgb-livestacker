@@ -22,6 +22,7 @@ class Frame:
     gain: float | None = None
     xbinning: int | None = None
     ccd_temp: float | None = None
+    imagetyp: str = ""   # IMAGETYP keyword, e.g. "LIGHT" / "DARK" ("" if absent)
 
 
 # Map common filter-name spellings onto single-letter RGB channels. Anything
@@ -40,6 +41,17 @@ def normalise_filter(name: str | None) -> str:
         return "?"
     key = name.strip().upper()
     return _FILTER_ALIASES.get(key, key)
+
+
+# Calibration / test exposures that can share a capture tree with the lights.
+_NOT_LIGHT = ("DARK", "FLAT", "BIAS", "OFFSET", "SNAPSHOT")
+
+
+def is_light(frame: Frame) -> bool:
+    """False for dark / flat / bias / snapshot frames, judged by IMAGETYP. Frames
+    with no IMAGETYP (other capture software) are given the benefit of the doubt."""
+    kind = frame.imagetyp.upper()
+    return not any(word in kind for word in _NOT_LIGHT)
 
 
 def load_frame(path: str | Path) -> Frame:
@@ -70,4 +82,5 @@ def load_frame(path: str | Path) -> Frame:
         gain=_num("GAIN"),
         xbinning=int(binning) if binning is not None else None,
         ccd_temp=_num("CCD-TEMP"),
+        imagetyp=str(header.get("IMAGETYP", "") or "").strip(),
     )

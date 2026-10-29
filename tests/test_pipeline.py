@@ -11,7 +11,8 @@ def _star_frame(shape=(120, 160), seed=0):
     rng = np.random.default_rng(seed)
     data = (1000.0 + rng.normal(0, 5, shape)).astype(np.float32)
     yy, xx = np.mgrid[0:shape[0], 0:shape[1]]
-    for cy, cx in [(30, 40), (70, 110), (95, 55), (45, 130), (60, 80)]:
+    for cy, cx in [(30, 40), (70, 110), (95, 55), (45, 130), (60, 80), (20, 100), (105, 140),
+                   (85, 20), (15, 15), (110, 90), (50, 60), (35, 145)]:
         data += 9000 * np.exp(-(((yy - cy) ** 2 + (xx - cx) ** 2) / 3.0))
     return Frame(path=type("P", (), {"name": "x.fits"})(), filter="R",
                  data=data, date_obs="", exptime=20.0)
@@ -57,3 +58,39 @@ def test_full_flag_skips_the_preview_downscale_and_status_reports_size():
     assert max(small.size) == 60                      # downscaled to the limit
     assert full.size == (w, h)                        # untouched: the real stack size
     assert p.status()["preview_px"] == 60
+
+
+def _frame_of(data, imagetyp="LIGHT", name="x.fits"):
+    f = _star_frame()
+    f.data = data
+    f.imagetyp = imagetyp
+    f.path = type("P", (), {"name": name})()
+    return f
+
+
+def test_calibration_frames_are_skipped_not_stacked():
+    cfg = StackConfig(hot_pixel_enabled=False, background_enabled=False,
+                      auto_white_balance=False, sigma_clip_enabled=False)
+    p = Pipeline(cfg)
+    for kind in ("DARK", "Flat Field", "BIAS", "SNAPSHOT"):
+        r = p.ingest(_frame_of(_star_frame().data, imagetyp=kind))
+        assert r.skipped and not r.ok
+    assert p.reference is None and p.rejected == 0 and not p.channels
+
+    assert p.ingest(_frame_of(_star_frame().data, imagetyp="LIGHT")).ok
+    assert p.ingest(_frame_of(_star_frame(seed=1).data, imagetyp="")).ok   # no IMAGETYP: accepted
+
+
+def test_a_starless_first_frame_is_not_adopted_as_the_reference():
+    cfg = StackConfig(hot_pixel_enabled=False, background_enabled=False,
+                      auto_white_balance=False, sigma_clip_enabled=False)
+    p = Pipeline(cfg)
+    rng = np.random.default_rng(3)
+    flat = (500 + rng.normal(0, 8, (120, 160))).astype(np.float32)
+
+    r = p.ingest(_frame_of(flat))
+    assert not r.ok and "reference" in r.message
+    assert p.reference is None                      # still waiting for a usable one
+
+    assert p.ingest(_frame_of(_star_frame(seed=0).data)).ok   # a real frame takes over...
+    assert p.ingest(_frame_of(_star_frame(seed=1).data)).ok   # ...and later frames register

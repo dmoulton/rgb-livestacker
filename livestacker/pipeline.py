@@ -14,12 +14,13 @@ from dataclasses import dataclass
 
 import numpy as np
 import astroalign as aa
+import sep
 from PIL import Image
 
 from .accumulator import ChannelStack
 from .calibration import Calibrator
 from .config import RGB_FILTERS, StackConfig, StretchParams
-from .fitsframe import Frame
+from .fitsframe import Frame, is_light
 from .processing import (
     SceneModeler, apply_luminance, apply_stretch, auto_stretch, combine_rgb,
 )
@@ -27,9 +28,20 @@ from .processing import (
 log = logging.getLogger("livestacker.pipeline")
 
 # astroalign: be tolerant, these are short subs with varying star counts.
-aa.MAX_CONTROL_POINTS = 60
 aa.MIN_MATCHES_FRACTION = 0.6
 aa.PIXEL_TOL = 2
+MAX_CONTROL_POINTS = 50        # stars (brightest first) used to find the transform
+
+
+def detect_stars(data: np.ndarray, detection_sigma: float = 5.0) -> np.ndarray:
+    """(x, y) of the sources in `data`, brightest first — the same detection
+    astroalign does internally, done once here so the reference's stars can be
+    reused for every sub instead of being re-detected each time."""
+    img = np.ascontiguousarray(data, dtype=np.float32)
+    bkg = sep.Background(img)
+    found = sep.extract(img - bkg.back(), detection_sigma * bkg.globalrms, minarea=5)
+    found.sort(order="flux")
+    return np.column_stack([found["x"], found["y"]])[::-1]
 
 
 @dataclass
@@ -39,6 +51,7 @@ class IngestResult:
     path: str
     message: str = ""
     valid_fraction: float = 0.0
+    skipped: bool = False      # not a light frame: ignored, not a failure
 
 
 class Pipeline:
@@ -47,6 +60,7 @@ class Pipeline:
         self.calibrator = calibrator
         self.channels: dict[str, ChannelStack] = {}
         self.reference: np.ndarray | None = None
+        self._ref_stars: np.ndarray | None = None
         self.reference_filter: str = ""
         self.reference_path: str = ""
         self._linear_rgb: np.ndarray | None = None
@@ -63,14 +77,16 @@ class Pipeline:
         """Align `data` to the reference. `astroalign`'s triangle matching is
         rotation-invariant, so a meridian flip needs nothing special — but a
         thin-cloud / soft-focus frame can still starve the star detector, so
-        drop the detection threshold and retry before giving up."""
+        drop the detection threshold and retry before giving up. The reference's
+        stars are detected once (when it is adopted), not for every sub."""
         last = None
         for det_sigma in (5, 3, 2):
             try:
-                registered, _ = aa.register(
-                    data, self.reference, fill_value=np.nan,
-                    detection_sigma=det_sigma,
-                )
+                transform, _ = aa.find_transform(
+                    data, self._ref_stars, max_control_points=MAX_CONTROL_POINTS,
+                    detection_sigma=det_sigma)
+                registered, _ = aa.apply_transform(
+                    transform, data, self.reference, fill_value=np.nan)
                 return registered, None
             except Exception as exc:  # too few stars, no transform, etc.
                 last = exc
@@ -87,14 +103,25 @@ class Pipeline:
         r = w - min(c.crop_right, w - 1 - l)
         return data[t:b, l:r]
 
-    def ingest(self, frame: Frame) -> IngestResult:
-        ch = self.channels.setdefault(
-            frame.filter, ChannelStack(frame.filter, self.cfg))
+    def ingest(self, frame: Frame, recombine: bool = True) -> IngestResult:
+        if not is_light(frame):
+            return IngestResult(False, frame.filter, frame.path.name,
+                                f"skipped: IMAGETYP={frame.imagetyp}", skipped=True)
 
         data = self.calibrator.apply(frame) if self.calibrator else frame.data
         data = self._crop_edges(data)
 
         if self.reference is None:
+            # Every later frame is aligned to this one, so don't adopt a frame
+            # that has no stars to match against; wait for a better one.
+            stars = detect_stars(data)
+            if len(stars) < self.cfg.min_reference_stars:
+                self.rejected += 1
+                return IngestResult(
+                    False, frame.filter, frame.path.name,
+                    f"unusable as the reference: only {len(stars)} stars "
+                    f"(need {self.cfg.min_reference_stars})")
+            self._ref_stars = stars[:MAX_CONTROL_POINTS]
             self.reference = data.copy()
             self.reference_filter = frame.filter
             self.reference_path = frame.path.name
@@ -113,13 +140,19 @@ class Pipeline:
                 return IngestResult(False, frame.filter, frame.path.name,
                                     f"low overlap ({frac:.0%})", frac)
 
+        ch = self.channels.setdefault(
+            frame.filter, ChannelStack(frame.filter, self.cfg))
         ch.add(aligned, valid)
         ch.last_path = frame.path.name
-        self._recombine()
+        if recombine:
+            self.recombine()
         return IngestResult(True, frame.filter, frame.path.name,
                             valid_fraction=float(valid.mean()))
 
-    def _recombine(self) -> None:
+    def recombine(self) -> None:
+        """Rebuild the combined image from the current channel stacks. Called
+        after each frame by default; a caller with a backlog can skip it per
+        frame and call it once when the queue drains."""
         data = {name: (st.mean,
                        st.covered_mask(self.cfg.coverage_min_frac),
                        st.frames)
