@@ -96,3 +96,38 @@ def test_snapshot_query_round_trips_settings():
     assert (p.auto, p.gamma, p.black, p.green, p.lum) == (False, 1.8, 0.1, 0.5, 0.25)
     assert params_from_query("gamma=abc&auto=1").gamma == 1.0   # bad value -> default
     assert params_from_query("auto=1").auto is True
+
+
+def test_zoomed_browser_gets_full_resolution_while_others_keep_the_preview():
+    cfg = StackConfig(hot_pixel_enabled=False, background_enabled=False,
+                      auto_white_balance=False, sigma_clip_enabled=False,
+                      min_preview_interval=0.0, preview_max_px=60)
+    ws_port, web_port = _free_port(), _free_port()
+    stacker = LiveStacker(cfg, "127.0.0.1", ws_port, web_port)
+    for seed in range(3):
+        stacker.pipeline.ingest(_star_frame(seed))
+    full_w = stacker.pipeline.status()["size"][0]
+    threading.Thread(target=lambda: asyncio.run(stacker.run()), daemon=True).start()
+
+    url = f"ws://127.0.0.1:{ws_port}"
+    for _ in range(100):
+        try:
+            socket.create_connection(("127.0.0.1", ws_port), timeout=0.1).close()
+            break
+        except OSError:
+            time.sleep(0.05)
+
+    def width(jpeg):
+        return Image.open(io.BytesIO(jpeg)).size[0]
+
+    with connect(url, max_size=None) as a, connect(url, max_size=None) as b:
+        a.send(_params())
+        b.send(_params())
+        assert width(_settle(a)) == 60 and width(_settle(b)) == 60
+
+        b.send(_params(full=True))                   # B zooms in past the preview
+        assert width(_settle(b)) == full_w
+        assert _settle(a, quiet=1.0) is None          # A is untouched
+
+        b.send(_params(full=False))                   # ...and back out again
+        assert width(_settle(b)) == 60

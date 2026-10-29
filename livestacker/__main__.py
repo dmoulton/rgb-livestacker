@@ -65,7 +65,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--background-box", type=int, default=128,
                    help="background mesh box size in px (default: 128)")
     p.add_argument("--preview-px", type=int, default=1600,
-                   help="longest preview edge sent to the browser")
+                   help="longest preview edge sent to the browser (a browser "
+                        "zoomed in past that is sent the full-size image)")
 
     for edge in ("top", "bottom", "left", "right"):
         p.add_argument(f"--crop-{edge}", type=int, default=0, metavar="N",

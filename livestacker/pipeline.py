@@ -158,7 +158,7 @@ class Pipeline:
         if img is None:
             return None
         longest = max(img.size)
-        if longest > self.cfg.preview_max_px:
+        if not params.full and longest > self.cfg.preview_max_px:
             scale = self.cfg.preview_max_px / longest
             img = img.resize(
                 (round(img.width * scale), round(img.height * scale)),
@@ -210,6 +210,11 @@ class Pipeline:
                                   if self.cfg.auto_white_balance else "off"),
             },
             "luminance": self._linear_lum is not None,
+            # full stack size + the preview limit, so a page can zoom in real
+            # image pixels and know when it needs the full-resolution render
+            "size": (None if self._linear_rgb is None
+                     else [self._linear_rgb.shape[1], self._linear_rgb.shape[0]]),
+            "preview_px": self.cfg.preview_max_px,
             "channels": chans,
             "total_frames": total,
             "rejected": self.rejected,

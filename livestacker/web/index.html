@@ -16,20 +16,22 @@
     font: 14px/1.45 -apple-system, Segoe UI, Roboto, sans-serif;
     display: flex; height: 100vh; overflow: hidden;
   }
-  #stage {
-    flex: 1; display: flex; align-items: center; justify-content: center;
-    padding: 16px; min-width: 0; position: relative; overflow: hidden;
+  #stage { flex: 1; min-width: 0; position: relative; overflow: hidden; }
+  /* the scrolling area: the image is sized explicitly (in CSS px) from the zoom,
+     and margin:auto centres it when it is smaller than the view while still
+     letting it scroll from its top-left corner when it is larger. */
+  #viewport {
+    position: absolute; inset: 0; overflow: auto; display: flex; padding: 16px;
   }
   #preview {
-    max-width: 100%; max-height: 100%;
+    flex: none; margin: auto; box-sizing: content-box;
     background: #000; border: 1px solid var(--line); border-radius: 4px;
-    transform-origin: center center; will-change: transform;
     user-select: none; -webkit-user-drag: none;
-    touch-action: none;
   }
-  #preview.pannable { cursor: grab; }
-  #preview.dragging { cursor: grabbing; }
-  #empty { color: var(--dim); text-align: center; }
+  #preview.crisp { image-rendering: pixelated; }   /* magnified: show real pixels */
+  #viewport.pannable #preview { cursor: grab; }
+  #viewport.dragging, #viewport.dragging #preview { cursor: grabbing; }
+  #empty { color: var(--dim); text-align: center; margin: auto; }
   #zoomctl {
     position: absolute; left: 12px; bottom: 12px; display: none;
     align-items: center; gap: 2px; padding: 3px;
@@ -39,6 +41,7 @@
   #zoomctl button {
     padding: 3px 9px; min-width: 30px; line-height: 1.1;
   }
+  #zoomctl button.on { border-color: var(--accent); color: var(--accent); }
   #zoomctl .zval {
     color: var(--dim); font-variant-numeric: tabular-nums;
     min-width: 46px; text-align: center; font-size: 12px;
@@ -84,14 +87,17 @@
 </head>
 <body>
   <div id="stage">
+    <div id="viewport">
+      <img id="preview" alt="" hidden>
+      <div id="empty">Waiting for the first stacked frame…</div>
+    </div>
     <button id="sidebar-toggle" title="Hide / show the panel">›</button>
-    <img id="preview" alt="" hidden>
-    <div id="empty">Waiting for the first stacked frame…</div>
     <div id="zoomctl">
       <button id="zoom-out" title="Zoom out (−)">&minus;</button>
-      <span class="zval" id="zoom-val">100%</span>
+      <span class="zval" id="zoom-val">–</span>
       <button id="zoom-in" title="Zoom in (+)">+</button>
-      <button id="zoom-fit" title="Fit (0)">Fit</button>
+      <button id="zoom-100" title="Actual size, 100% (1)">100%</button>
+      <button id="zoom-fit" title="Fit the whole image (0)">Fit</button>
     </div>
   </div>
 
@@ -155,6 +161,11 @@ const WS_PORT = "{{WS_PORT}}";
 const $ = (id) => document.getElementById(id);
 const sliders = ["black", "midtones", "gamma", "contrast", "green", "lum"];
 let ws, reconnectTimer, lastUrl;
+const preview = $("preview"), viewport = $("viewport");
+// z: device pixels per image pixel (1 = 100%); fit: follow the window size;
+// full: ask the server for this browser's preview at full resolution
+const view = { z: 1, fit: true, full: false };
+let fullSize = null, previewPx = 0;      // stack size / preview limit (from status)
 
 function currentParams() {
   return {
@@ -166,6 +177,7 @@ function currentParams() {
     contrast: parseFloat($("contrast").value),
     green: parseFloat($("green").value),
     lum: parseFloat($("lum").value),
+    full: view.full,
   };
 }
 
@@ -175,7 +187,9 @@ function currentParams() {
 const SETTINGS_KEY = "ls.display";
 
 function saveParams() {
-  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(currentParams())); }
+  const p = currentParams();
+  delete p.full;                       // follows the zoom, not a saved preference
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(p)); }
   catch (_) {}
 }
 
@@ -196,7 +210,7 @@ function applyParams(p) {
 // the snapshot link carries this browser's settings so the PNG matches its view
 function updateSaveLink() {
   const p = currentParams();
-  delete p.type;
+  delete p.type; delete p.full;        // the PNG is always full size
   p.auto = p.auto ? 1 : 0;
   $("save").href = "/snapshot.png?" + new URLSearchParams(p).toString();
 }
@@ -232,6 +246,11 @@ sliders.forEach((id) => $(id).addEventListener("input", () => {
 $("auto").addEventListener("change", () => { reflectValues(); sendParams(); });
 
 function renderStatus(s) {
+  if (s.size) {                        // full stack size, for true-pixel zoom
+    fullSize = { w: s.size[0], h: s.size[1] };
+    previewPx = s.preview_px || 0;
+    applyView();
+  }
   $("ref").textContent = s.reference
     ? `ref: ${s.reference} (${s.reference_filter})` : "no reference yet";
   $("total").textContent = s.total_frames;
@@ -271,110 +290,148 @@ function renderStatus(s) {
 
 function showPreview(blob) {
   const url = URL.createObjectURL(blob);
-  const img = $("preview");
-  img.onload = () => {
+  preview.onload = () => {
     if (lastUrl) URL.revokeObjectURL(lastUrl);
     lastUrl = url;
-    clampView();
-    applyView();          // image size can change as the crop settles
+    applyView();          // size / crispness depend on what actually arrived
   };
-  img.src = url;
-  img.hidden = false;
+  preview.src = url;
+  preview.hidden = false;
   $("empty").hidden = true;
   $("zoomctl").style.display = "flex";
 }
 
-/* ---- zoom & pan -------------------------------------------------------- */
-const stage = $("stage");
-const preview = $("preview");
-const view = { scale: 1, x: 0, y: 0 };
-const MIN_SCALE = 1, MAX_SCALE = 16;
+/* ---- zoom & pan --------------------------------------------------------
+   Zoom is measured in real image pixels. 100% shows one image pixel per screen
+   pixel (so a large stack overflows the window and scrolls / pans), "Fit"
+   shrinks the whole image to the window, and every other percentage scales from
+   that same 100%. `view.z` is device pixels per image pixel. */
+const PAD = 16, MAX_Z = 16;
+const dpr = () => window.devicePixelRatio || 1;
 
-function fitSize() {
-  // on-screen size of the image at scale 1 (rect already includes the transform)
-  const r = preview.getBoundingClientRect();
-  return { w: r.width / view.scale, h: r.height / view.scale };
+// size of the full stack (not of the possibly-downscaled preview we received)
+function imageSize() {
+  if (fullSize) return fullSize;
+  return preview.naturalWidth
+    ? { w: preview.naturalWidth, h: preview.naturalHeight } : null;
 }
 
-function clampView() {
-  view.scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, view.scale));
-  const f = fitSize();
-  const maxX = Math.max(0, (f.w * view.scale - stage.clientWidth) / 2);
-  const maxY = Math.max(0, (f.h * view.scale - stage.clientHeight) / 2);
-  view.x = Math.min(maxX, Math.max(-maxX, view.x));
-  view.y = Math.min(maxY, Math.max(-maxY, view.y));
+function fitZ() {
+  const s = imageSize();
+  if (!s) return 1;
+  const aw = Math.max(50, viewport.clientWidth - 2 * PAD - 2);
+  const ah = Math.max(50, viewport.clientHeight - 2 * PAD - 2);
+  return Math.min(aw / s.w, ah / s.h) * dpr();
 }
 
 function applyView() {
-  preview.style.transform =
-    `translate(${view.x}px, ${view.y}px) scale(${view.scale})`;
-  preview.classList.toggle("pannable", view.scale > 1.001);
-  $("zoom-val").textContent = Math.round(view.scale * 100) + "%";
+  const s = imageSize();
+  if (!s || preview.hidden) return;
+  const fit = fitZ();
+  if (view.fit) view.z = fit;
+  view.z = Math.min(MAX_Z, Math.max(Math.min(fit, 1), view.z));
+  view.fit = Math.abs(view.z - fit) < fit * 0.002;
+
+  const css = view.z / dpr();
+  preview.style.width = (s.w * css) + "px";
+  preview.style.height = (s.h * css) + "px";
+  $("zoom-val").textContent = Math.round(view.z * 100) + "%";
+  $("zoom-fit").classList.toggle("on", view.fit);
+  $("zoom-100").classList.toggle("on", Math.abs(view.z - 1) < 0.005);
+  // magnified and we hold the real pixels: show them crisp, not smoothed
+  preview.classList.toggle("crisp", view.z > 1.001 && preview.naturalWidth >= s.w - 1);
+  viewport.classList.toggle("pannable",
+    viewport.scrollWidth > viewport.clientWidth + 1 ||
+    viewport.scrollHeight > viewport.clientHeight + 1);
+  updateFullRequest();
 }
 
-// zoom keeping the point under (clientX, clientY) fixed on screen
-function zoomAt(clientX, clientY, nextScale) {
-  const sr = stage.getBoundingClientRect();
-  const mx = clientX - (sr.left + stage.clientWidth / 2);
-  const my = clientY - (sr.top + stage.clientHeight / 2);
-  nextScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, nextScale));
-  const k = nextScale / view.scale;
-  view.x = mx - k * (mx - view.x);
-  view.y = my - k * (my - view.y);
-  view.scale = nextScale;
-  clampView();
+// Past the preview's own resolution there is nothing more to see in it, so ask
+// the server to send this browser's picture at full size (and drop back to the
+// small preview when zoomed out again). The Fit view always uses the preview.
+function updateFullRequest() {
+  const s = imageSize();
+  let want = false;
+  if (s && previewPx && !view.fit && Math.max(s.w, s.h) > previewPx) {
+    const p0 = previewPx / Math.max(s.w, s.h);     // preview px per image px
+    want = view.z > p0 * (view.full ? 0.9 : 1.0);
+  }
+  if (want !== view.full) { view.full = want; sendParams(); }
+}
+
+// zoom to `z`, keeping the point under (cx, cy) fixed on screen
+function zoomAt(cx, cy, z) {
+  if (!imageSize() || preview.hidden) return;
+  const r = preview.getBoundingClientRect();
+  const fx = r.width ? Math.min(1, Math.max(0, (cx - r.left) / r.width)) : 0.5;
+  const fy = r.height ? Math.min(1, Math.max(0, (cy - r.top) / r.height)) : 0.5;
+  view.fit = false;
+  view.z = z;
   applyView();
+  const r2 = preview.getBoundingClientRect();
+  viewport.scrollLeft += r2.left + fx * r2.width - cx;
+  viewport.scrollTop += r2.top + fy * r2.height - cy;
 }
 
-function zoomCentre(factor) {
-  const sr = stage.getBoundingClientRect();
-  zoomAt(sr.left + stage.clientWidth / 2, sr.top + stage.clientHeight / 2,
-         view.scale * factor);
+function viewCentre() {
+  const r = viewport.getBoundingClientRect();
+  return [r.left + r.width / 2, r.top + r.height / 2];
 }
-
-function resetView() {
-  view.scale = 1; view.x = 0; view.y = 0;
+function zoomCentre(factor) { zoomAt(...viewCentre(), view.z * factor); }
+function showActual(cx, cy) {
+  zoomAt(...(cx == null ? viewCentre() : [cx, cy]), 1);
+}
+function showFit() {
+  view.fit = true;
   applyView();
+  viewport.scrollLeft = 0;
+  viewport.scrollTop = 0;
 }
 
-stage.addEventListener("wheel", (e) => {
+viewport.addEventListener("wheel", (e) => {
   if (preview.hidden) return;
   e.preventDefault();
-  zoomAt(e.clientX, e.clientY, view.scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15));
+  zoomAt(e.clientX, e.clientY, view.z * (e.deltaY < 0 ? 1.15 : 1 / 1.15));
 }, { passive: false });
 
+// drag to pan (the scrollbars work too)
 let drag = null;
-preview.addEventListener("pointerdown", (e) => {
-  if (preview.hidden || view.scale <= 1.001) return;
-  drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
-  preview.setPointerCapture(e.pointerId);
-  preview.classList.add("dragging");
+viewport.addEventListener("pointerdown", (e) => {
+  if (preview.hidden || e.pointerType !== "mouse" || e.button !== 0) return;
+  if (!viewport.classList.contains("pannable")) return;
+  const r = viewport.getBoundingClientRect();
+  if (e.clientX - r.left >= viewport.clientWidth ||
+      e.clientY - r.top >= viewport.clientHeight) return;      // on a scrollbar
+  drag = { x: e.clientX, y: e.clientY,
+           l: viewport.scrollLeft, t: viewport.scrollTop };
+  viewport.setPointerCapture(e.pointerId);
+  viewport.classList.add("dragging");
 });
-preview.addEventListener("pointermove", (e) => {
+viewport.addEventListener("pointermove", (e) => {
   if (!drag) return;
-  view.x = drag.vx + (e.clientX - drag.x);
-  view.y = drag.vy + (e.clientY - drag.y);
-  clampView();
-  applyView();
+  viewport.scrollLeft = drag.l - (e.clientX - drag.x);
+  viewport.scrollTop = drag.t - (e.clientY - drag.y);
 });
 function endDrag(e) {
   if (!drag) return;
   drag = null;
-  preview.classList.remove("dragging");
-  try { preview.releasePointerCapture(e.pointerId); } catch (_) {}
+  viewport.classList.remove("dragging");
+  try { viewport.releasePointerCapture(e.pointerId); } catch (_) {}
 }
-preview.addEventListener("pointerup", endDrag);
-preview.addEventListener("pointercancel", endDrag);
+viewport.addEventListener("pointerup", endDrag);
+viewport.addEventListener("pointercancel", endDrag);
 preview.addEventListener("dragstart", (e) => e.preventDefault());
 
+// double-click toggles between 100% (at the clicked point) and Fit
 preview.addEventListener("dblclick", (e) => {
-  if (view.scale > 1.001) resetView();
-  else zoomAt(e.clientX, e.clientY, 3);
+  if (view.fit || view.z < 0.999) showActual(e.clientX, e.clientY);
+  else showFit();
 });
 
 $("zoom-in").addEventListener("click", () => zoomCentre(1.4));
 $("zoom-out").addEventListener("click", () => zoomCentre(1 / 1.4));
-$("zoom-fit").addEventListener("click", resetView);
+$("zoom-100").addEventListener("click", () => showActual());
+$("zoom-fit").addEventListener("click", showFit);
 
 window.addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT") return;
@@ -382,10 +439,11 @@ window.addEventListener("keydown", (e) => {
   if (preview.hidden) return;
   if (e.key === "+" || e.key === "=") zoomCentre(1.4);
   else if (e.key === "-" || e.key === "_") zoomCentre(1 / 1.4);
-  else if (e.key === "0") resetView();
+  else if (e.key === "1") showActual();
+  else if (e.key === "0") showFit();
 });
 
-window.addEventListener("resize", () => { clampView(); applyView(); });
+window.addEventListener("resize", applyView);
 
 /* ---- sidebar show / hide ------------------------------------------------ */
 function setSidebar(hidden) {
@@ -393,8 +451,8 @@ function setSidebar(hidden) {
   $("sidebar-toggle").textContent = hidden ? "‹" : "›";
   $("sidebar-toggle").title = (hidden ? "Show" : "Hide") + " the panel  (\\)";
   try { localStorage.setItem("ls.sidebar", hidden ? "hidden" : "shown"); } catch (_) {}
-  // the stage width changed — re-fit / re-clamp the preview
-  requestAnimationFrame(() => { clampView(); applyView(); });
+  // the stage width changed — re-fit the preview
+  requestAnimationFrame(applyView);
 }
 function toggleSidebar() {
   setSidebar(!document.body.classList.contains("nosidebar"));

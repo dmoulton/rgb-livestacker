@@ -38,3 +38,22 @@ def test_no_crop_keeps_full_frame():
     p = Pipeline(cfg)
     p.ingest(_star_frame(seed=0))
     assert p.reference.shape == (120, 160)
+
+
+def test_full_flag_skips_the_preview_downscale_and_status_reports_size():
+    import io
+    from PIL import Image
+    from livestacker.config import StretchParams
+
+    cfg = StackConfig(hot_pixel_enabled=False, background_enabled=False,
+                      auto_white_balance=False, sigma_clip_enabled=False,
+                      preview_max_px=60)
+    p = Pipeline(cfg)
+    p.ingest(_star_frame(seed=0))
+    w, h = p.status()["size"]
+
+    small = Image.open(io.BytesIO(p.render_preview(StretchParams())))
+    full = Image.open(io.BytesIO(p.render_preview(StretchParams(full=True))))
+    assert max(small.size) == 60                      # downscaled to the limit
+    assert full.size == (w, h)                        # untouched: the real stack size
+    assert p.status()["preview_px"] == 60

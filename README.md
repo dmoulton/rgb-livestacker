@@ -47,6 +47,14 @@ livestack.bat --watch  "C:\path\to\NINA\Images"
 Then open <http://localhost:8080/>. Any option below can be added to the
 command. (`--watch` recurses, so point it at NINA's image root.)
 
+**Zoom** is in real image pixels: **100%** shows one image pixel per screen
+pixel (a big stack overflows the window — scroll, or click-and-drag to pan),
+**Fit** shrinks the whole image to the window and follows it as it resizes, and
+every other percentage scales from that same 100%. Mouse wheel zooms at the
+cursor, `+` / `-` zoom, `1` is 100%, `0` is Fit, and double-click toggles
+between them. The browser is sent the full-resolution image automatically once
+you zoom past what the downscaled preview can show.
+
 Several browsers can connect at once. The stack is shared, but the display
 settings (stretch, gamma, green-noise, luminance, zoom, panel) are **per
 browser**: each is remembered in that browser, and the server renders each one
@@ -74,7 +82,7 @@ its own preview, so moving a slider in one never changes another's picture. The
 | `--no-auto-wb` | disable automatic per-channel white balance |
 | `--background-box N` | background mesh box size in px (default 128) |
 | `--crop-top/-bottom/-left/-right N` | trim N rows/columns off every raw frame (a permanently bad sensor edge) |
-| `--preview-px N` | longest preview edge sent to the browser (default 1600) |
+| `--preview-px N` | longest preview edge sent to the browser (default 1600); a browser zoomed in past that is sent the full-size image |
 | `-v` | verbose logging |
 
 ## How it works
