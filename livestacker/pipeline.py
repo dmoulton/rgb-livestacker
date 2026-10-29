@@ -23,6 +23,7 @@ from .config import RGB_FILTERS, StackConfig, StretchParams
 from .fitsframe import Frame, is_light
 from .processing import (
     SceneModeler, apply_luminance, apply_stretch, auto_stretch, combine_rgb,
+    lrgb_chroma,
 )
 
 log = logging.getLogger("livestacker.pipeline")
@@ -66,6 +67,8 @@ class Pipeline:
         self._linear_rgb: np.ndarray | None = None
         self._linear_lum: np.ndarray | None = None
         self._auto_params: StretchParams | None = None
+        self._auto_params_lrgb: StretchParams | None = None   # stretch of the L-carrying image
+        self._chroma: np.ndarray | None = None
         self._scene = SceneModeler()
         self._lock = threading.Lock()
         self.started_at = time.time()
@@ -158,16 +161,27 @@ class Pipeline:
                        st.frames)
                 for name, st in self.channels.items()}
         rgb, lum = combine_rgb(data, self.cfg, self._scene)
+        chroma = auto_lrgb = None
+        if rgb is not None and lum is not None:
+            chroma = lrgb_chroma(rgb)
+            # the L-carrying image has a different brightness distribution, so
+            # Auto needs its own black point / midtones when L is shown
+            auto_lrgb = auto_stretch(apply_luminance(rgb, lum, 1.0, chroma))
         with self._lock:
             self._linear_rgb = rgb
             self._linear_lum = lum
+            self._chroma = chroma
             self._auto_params = auto_stretch(rgb) if rgb is not None else None
+            self._auto_params_lrgb = auto_lrgb
 
     # -- rendering -------------------------------------------------------
 
     def _resolve_params(self, params: StretchParams) -> StretchParams:
         if params.auto and self._auto_params is not None:
-            merged = StretchParams(**self._auto_params.to_json())
+            base = self._auto_params
+            if params.lum >= 0.5 and self._auto_params_lrgb is not None:
+                base = self._auto_params_lrgb
+            merged = StretchParams(**base.to_json())
             merged.gamma = params.gamma
             merged.contrast = params.contrast
             merged.green = params.green
@@ -179,12 +193,12 @@ class Pipeline:
         with self._lock:
             # recombine() swaps in new arrays and nothing downstream writes to
             # these, so a reference is a safe snapshot — no copy needed
-            rgb, lum = self._linear_rgb, self._linear_lum
+            rgb, lum, chroma = self._linear_rgb, self._linear_lum, self._chroma
         if rgb is None:
             return None
         eff = self._resolve_params(params)
         if lum is not None and eff.lum > 1e-3:
-            rgb = apply_luminance(rgb, lum, min(eff.lum, 1.0))
+            rgb = apply_luminance(rgb, lum, min(eff.lum, 1.0), chroma)
         return Image.fromarray(apply_stretch(rgb, eff), mode="RGB")
 
     def render_preview(self, params: StretchParams) -> bytes | None:

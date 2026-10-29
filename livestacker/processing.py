@@ -289,16 +289,42 @@ def combine_rgb(
 
 # -- luminance (LRGB) -------------------------------------------------
 
-def apply_luminance(rgb: np.ndarray, lum: np.ndarray, blend: float) -> np.ndarray:
-    """Replace the brightness of `rgb` with `lum` (a mono L stack) while keeping
-    its colour, blended by `blend` (0 = RGB only, 1 = full L). `lum` may be NaN
-    where the L channel has no coverage — those pixels are left as RGB.
+_LUMA = (0.30, 0.59, 0.11)
+
+
+def _luma(rgb: np.ndarray) -> np.ndarray:
+    return _LUMA[0] * rgb[..., 0] + _LUMA[1] * rgb[..., 1] + _LUMA[2] * rgb[..., 2]
+
+
+def lrgb_chroma(rgb: np.ndarray, smooth: float = 2.0, floor: float = 0.02) -> np.ndarray:
+    """Per-pixel colour ratios (R,G,B over luma) of a smoothed copy of `rgb`, for
+    colouring a luminance layer. The RGB stack is the noisy part of an LRGB
+    image, so its colour is taken from a blurred copy — colour noise is far less
+    visible than luminance noise. Where the signal is below `floor` the ratios
+    fade to neutral grey instead of amplifying noise."""
+    from scipy.ndimage import gaussian_filter
+    sm = np.stack([gaussian_filter(rgb[..., i], smooth, truncate=3.0)
+                   for i in range(3)], axis=-1)
+    lr = _luma(sm)
+    w = np.clip(lr / floor, 0.0, 1.0)[..., None]
+    ratio = sm / np.maximum(lr, 1e-6)[..., None]
+    return (w * ratio + (1.0 - w)).astype(np.float32)
+
+
+def apply_luminance(rgb: np.ndarray, lum: np.ndarray, blend: float,
+                    chroma: np.ndarray | None = None) -> np.ndarray:
+    """LRGB: out = (1 - blend) * rgb + blend * chroma * L, so blend 0 is the RGB
+    image and 1 is the L stack carrying the RGB colour. `lum` may be NaN where
+    the L channel has no coverage — those pixels stay RGB. `chroma` is the
+    (cached) output of `lrgb_chroma`; computed here if not given.
     """
-    lr = 0.30 * rgb[..., 0] + 0.59 * rgb[..., 1] + 0.11 * rgb[..., 2]
-    target = np.where(np.isfinite(lum),
-                      (1.0 - blend) * lr + blend * np.nan_to_num(lum), lr)
-    scale = np.clip(target / np.maximum(lr, 1e-4), 0.0, 6.0)
-    return np.clip(rgb * scale[..., None], 0.0, None).astype(np.float32)
+    if chroma is None:
+        chroma = lrgb_chroma(rgb)
+    have = np.isfinite(lum)
+    coloured = chroma * np.where(have, lum, 0.0)[..., None]
+    out = (1.0 - blend) * rgb + blend * coloured
+    out = np.where(have[..., None], out, rgb)
+    return np.clip(out, 0.0, None).astype(np.float32)
 
 
 # -- linked display stretch --------------------------------------------
