@@ -169,15 +169,51 @@ function currentParams() {
   };
 }
 
+/* Display settings belong to this browser: they are kept here, sent to the
+   server over this connection only, and the server renders this browser's
+   preview with them — another browser's sliders never touch this picture. */
+const SETTINGS_KEY = "ls.display";
+
+function saveParams() {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(currentParams())); }
+  catch (_) {}
+}
+
+function restoreParams() {
+  try {
+    const p = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null");
+    if (p) applyParams(p);
+  } catch (_) {}
+}
+
+function applyParams(p) {
+  if (p.auto != null) $("auto").checked = !!p.auto;
+  for (const id of sliders) {
+    if (p[id] != null && isFinite(p[id])) $(id).value = p[id];
+  }
+}
+
+// the snapshot link carries this browser's settings so the PNG matches its view
+function updateSaveLink() {
+  const p = currentParams();
+  delete p.type;
+  p.auto = p.auto ? 1 : 0;
+  $("save").href = "/snapshot.png?" + new URLSearchParams(p).toString();
+}
+
+function sendNow() {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify(currentParams()));
+}
+
 let sendTimer;
 function sendParams() {
+  saveParams();
   clearTimeout(sendTimer);
-  sendTimer = setTimeout(() => {
-    if (ws && ws.readyState === 1) ws.send(JSON.stringify(currentParams()));
-  }, 40);
+  sendTimer = setTimeout(sendNow, 40);
 }
 
 function reflectValues() {
+  updateSaveLink();
   $("black-v").textContent = (+$("black").value).toFixed(3);
   $("midtones-v").textContent = (+$("midtones").value).toFixed(3);
   $("gamma-v").textContent = (+$("gamma").value).toFixed(2);
@@ -194,17 +230,6 @@ sliders.forEach((id) => $(id).addEventListener("input", () => {
   sendParams();
 }));
 $("auto").addEventListener("change", () => { reflectValues(); sendParams(); });
-
-function applyServerParams(p) {
-  $("auto").checked = !!p.auto;
-  if (p.black != null) $("black").value = p.black;
-  if (p.midtones != null) $("midtones").value = p.midtones;
-  if (p.gamma != null) $("gamma").value = p.gamma;
-  if (p.contrast != null) $("contrast").value = p.contrast;
-  if (p.green != null) $("green").value = p.green;
-  if (p.lum != null) $("lum").value = p.lum;
-  reflectValues();
-}
 
 function renderStatus(s) {
   $("ref").textContent = s.reference
@@ -382,7 +407,10 @@ try {
 function connect() {
   ws = new WebSocket(`ws://${location.hostname}:${WS_PORT}`);
   ws.binaryType = "blob";
-  ws.onopen = () => { $("conn").className = "ok"; $("conn").textContent = "live"; };
+  ws.onopen = () => {
+    $("conn").className = "ok"; $("conn").textContent = "live";
+    sendNow();            // (re)introduce this browser's own display settings
+  };
   ws.onclose = () => {
     $("conn").className = "down"; $("conn").textContent = "disconnected — retrying";
     clearTimeout(reconnectTimer);
@@ -391,11 +419,11 @@ function connect() {
   ws.onmessage = (ev) => {
     if (typeof ev.data !== "string") { showPreview(ev.data); return; }
     const msg = JSON.parse(ev.data);
-    if (msg.type === "params") applyServerParams(msg);
-    else if (msg.type === "status") renderStatus(msg);
+    if (msg.type === "status") renderStatus(msg);
   };
 }
 
+restoreParams();
 reflectValues();
 connect();
 </script>

@@ -1,13 +1,17 @@
 """Web server: static preview page + a websocket that streams the live preview
 and receives stretch-control updates.
 
+The stack itself is shared, but the *display* settings (stretch, SCNR,
+luminance blend) belong to each connected browser: every websocket carries its
+own `StretchParams`, and each is sent a preview rendered with its own settings.
+
 Layout of moving parts:
 
     source thread ─┐
                    ├─► job queue ─► worker thread ─► Pipeline
    websocket in  ──┘                     │
                                          ▼
-                   asyncio loop ◄── threadsafe broadcast ─► websocket clients
+                   asyncio loop ◄── threadsafe send ─► websocket clients
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ import queue
 import threading
 import time
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import websockets
 
@@ -33,6 +38,29 @@ log = logging.getLogger("livestacker.server")
 WEB_ROOT = Path(__file__).resolve().parent / "web"
 
 
+def params_from_query(query: str) -> StretchParams:
+    """Build display settings from a URL query string (used by /snapshot.png so
+    a download matches what *that* browser is showing). Unknown / malformed
+    values fall back to the defaults."""
+    raw = {k: v[-1] for k, v in parse_qs(query).items()}
+    data: dict = {}
+    for key, default in StretchParams().to_json().items():
+        if key not in raw:
+            continue
+        if isinstance(default, bool):
+            data[key] = raw[key].lower() in ("1", "true", "yes", "on")
+        else:
+            try:
+                data[key] = float(raw[key])
+            except ValueError:
+                pass
+    return StretchParams.from_json(data)
+
+
+def _params_key(p: StretchParams) -> tuple:
+    return tuple(p.to_json().items())
+
+
 class LiveStacker:
     def __init__(self, cfg: StackConfig, host: str, ws_port: int, web_port: int,
                  calibrator: Calibrator | None = None):
@@ -42,11 +70,13 @@ class LiveStacker:
         self.web_port = web_port
 
         self.pipeline = Pipeline(cfg, calibrator)
-        self.params = StretchParams()
         self._jobs: "queue.Queue[tuple[str, object]]" = queue.Queue()
-        self._clients: set = set()
+        # connected browsers -> their own display settings. Mutated on the
+        # event-loop thread, read by the worker thread, hence the lock.
+        self._clients: dict = {}
+        self._dirty: set = set()           # clients owed a fresh render
+        self._clients_lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._latest_preview: bytes | None = None
         self._last_preview_at = 0.0
         self._worker = threading.Thread(target=self._worker_loop, daemon=True)
         self._stop = threading.Event()
@@ -67,9 +97,8 @@ class LiveStacker:
             try:
                 if kind == "frame":
                     self._handle_frame(Path(payload))
-                elif kind == "params":
-                    self.params = payload  # type: ignore[assignment]
-                    self._push_preview(force=True)
+                elif kind == "render":
+                    self._render_dirty()
             except Exception:
                 log.exception("worker job failed (%s)", kind)
 
@@ -90,16 +119,44 @@ class LiveStacker:
 
     # -- preview / status broadcasting ------------------------------------
 
-    def _push_preview(self, force: bool = False) -> None:
+    def _render_and_send(self, targets: list) -> None:
+        """Render a preview for each (ws, params) pair — once per distinct set
+        of settings, so browsers sharing settings share the work — and send each
+        browser only its own image."""
+        rendered: dict = {}
+        for ws, params in targets:
+            key = _params_key(params)
+            if key not in rendered:
+                rendered[key] = self.pipeline.render_preview(params)
+            if rendered[key] is not None:
+                self._threadsafe(self._send_one, ws, rendered[key])
+
+    def _push_preview(self) -> None:
+        """A new frame landed: refresh every browser (throttled)."""
         now = time.time()
-        if not force and now - self._last_preview_at < self.cfg.min_preview_interval:
+        if now - self._last_preview_at < self.cfg.min_preview_interval:
             return
-        preview = self.pipeline.render_preview(self.params)
-        if preview is None:
+        with self._clients_lock:
+            targets = list(self._clients.items())
+            self._dirty.clear()           # everyone is about to be refreshed
+        if not targets:
             return
         self._last_preview_at = now
-        self._latest_preview = preview
-        self._threadsafe(self._broadcast_bytes, preview)
+        self._render_and_send(targets)
+
+    def _render_dirty(self) -> None:
+        """A browser connected or changed its settings: refresh just those."""
+        with self._clients_lock:
+            targets = [(ws, self._clients[ws]) for ws in self._dirty
+                       if ws in self._clients]
+            self._dirty.clear()
+        if targets:
+            self._render_and_send(targets)
+
+    def _mark_dirty(self, ws) -> None:
+        with self._clients_lock:
+            self._dirty.add(ws)
+        self._jobs.put(("render", None))
 
     def _broadcast_status(self) -> None:
         self._threadsafe(self._broadcast_text,
@@ -109,23 +166,25 @@ class LiveStacker:
         if self._loop is not None:
             self._loop.call_soon_threadsafe(fn, *args)
 
-    def _broadcast_bytes(self, data: bytes) -> None:
-        websockets.broadcast(self._clients, data)
+    def _send_one(self, ws, data: bytes) -> None:
+        websockets.broadcast([ws], data)
 
     def _broadcast_text(self, text: str) -> None:
-        websockets.broadcast(self._clients, text)
+        with self._clients_lock:
+            clients = list(self._clients)
+        websockets.broadcast(clients, text)
 
     # -- websocket handler ----------------------------------------------
 
     async def _ws_handler(self, ws) -> None:
-        self._clients.add(ws)
+        with self._clients_lock:
+            self._clients[ws] = StretchParams()      # replaced by the page's own
+            total = len(self._clients)
         peer = getattr(ws, "remote_address", ("?",))[0]
-        log.info("client connected (%s), %d total", peer, len(self._clients))
+        log.info("client connected (%s), %d total", peer, total)
         try:
-            await ws.send(json.dumps({"type": "params", **self.params.to_json()}))
             await ws.send(json.dumps(self.pipeline.status()))
-            if self._latest_preview is not None:
-                await ws.send(self._latest_preview)
+            self._mark_dirty(ws)                     # show something right away
 
             async for message in ws:
                 if isinstance(message, bytes):
@@ -135,12 +194,17 @@ class LiveStacker:
                 except json.JSONDecodeError:
                     continue
                 if data.get("type") == "params":
-                    self._jobs.put(("params", StretchParams.from_json(data)))
+                    with self._clients_lock:
+                        self._clients[ws] = StretchParams.from_json(data)
+                    self._mark_dirty(ws)
         except websockets.ConnectionClosed:
             pass
         finally:
-            self._clients.discard(ws)
-            log.info("client disconnected (%s), %d left", peer, len(self._clients))
+            with self._clients_lock:
+                self._clients.pop(ws, None)
+                self._dirty.discard(ws)
+                left = len(self._clients)
+            log.info("client disconnected (%s), %d left", peer, left)
 
     # -- http (static + snapshot) --------------------------------------
 
@@ -156,7 +220,9 @@ class LiveStacker:
 
             def do_GET(self):
                 if self.path.startswith("/snapshot"):
-                    png = stacker.pipeline.snapshot_png(stacker.params)
+                    # the page puts its own display settings in the query string
+                    png = stacker.pipeline.snapshot_png(
+                        params_from_query(urlparse(self.path).query))
                     if png is None:
                         self.send_error(503, "no image yet")
                         return

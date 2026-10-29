@@ -47,6 +47,12 @@ livestack.bat --watch  "C:\path\to\NINA\Images"
 Then open <http://localhost:8080/>. Any option below can be added to the
 command. (`--watch` recurses, so point it at NINA's image root.)
 
+Several browsers can connect at once. The stack is shared, but the display
+settings (stretch, gamma, green-noise, luminance, zoom, panel) are **per
+browser**: each is remembered in that browser, and the server renders each one
+its own preview, so moving a slider in one never changes another's picture. The
+"Save full-res PNG" link downloads the image with *that* browser's settings.
+
 ### Options
 
 | flag | meaning |
