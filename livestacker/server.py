@@ -27,6 +27,7 @@ import http.server
 import json
 import logging
 import queue
+import socket
 import threading
 import time
 from pathlib import Path
@@ -62,6 +63,31 @@ def params_from_query(query: str) -> StretchParams:
             except ValueError:
                 pass
     return StretchParams.from_json(data)
+
+
+def _pipe(a: socket.socket, b: socket.socket) -> None:
+    """Copy bytes both ways between two sockets until either side closes."""
+    def pump(src, dst):
+        try:
+            while True:
+                chunk = src.recv(65536)
+                if not chunk:
+                    break
+                dst.sendall(chunk)
+        except OSError:
+            pass
+        finally:
+            for s in (src, dst):
+                try:
+                    s.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+    t = threading.Thread(target=pump, args=(b, a), daemon=True)
+    t.start()
+    pump(a, b)
+    t.join(timeout=2)
+    b.close()
 
 
 def _params_key(p: StretchParams) -> tuple:
@@ -279,7 +305,31 @@ class LiveStacker:
             def log_message(self, *a):  # keep stdlib server quiet
                 pass
 
+            def _relay_websocket(self):
+                """Pass a websocket upgrade on the web port through to the real
+                websocket server, so the page needs only one port (a tunnel or
+                reverse proxy forwarding just the web port works)."""
+                self.close_connection = True
+                if "websocket" not in self.headers.get("Upgrade", "").lower():
+                    self.send_error(426, "websocket upgrade required")
+                    return
+                target = stacker.host if stacker.host not in ("", "0.0.0.0", "::") \
+                    else "127.0.0.1"
+                try:
+                    up = socket.create_connection((target, stacker.ws_port), timeout=5)
+                except OSError:
+                    self.send_error(502, "websocket server unavailable")
+                    return
+                up.settimeout(None)
+                head = f"GET / HTTP/1.1\r\n" + "".join(
+                    f"{k}: {v}\r\n" for k, v in self.headers.items()) + "\r\n"
+                up.sendall(head.encode("latin-1"))
+                _pipe(self.connection, up)
+
             def do_GET(self):
+                if self.path.split("?")[0] == "/ws":
+                    self._relay_websocket()
+                    return
                 if self.path.startswith("/snapshot"):
                     # the page puts its own display settings in the query string
                     png = stacker.pipeline.snapshot_png(

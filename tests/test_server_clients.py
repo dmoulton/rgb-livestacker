@@ -201,3 +201,28 @@ def test_backlog_recombines_once_not_per_frame():
         server_mod.load_frame = original
     assert len(calls) == 1, "recombine only when the backlog drains"
     assert stacker.pipeline.status()["size"]
+
+
+def test_websocket_is_reachable_through_the_web_port():
+    """A tunnel forwarding only the web port must be enough: /ws on that port
+    relays to the websocket server."""
+    cfg = StackConfig(hot_pixel_enabled=False, background_enabled=False,
+                      auto_white_balance=False, sigma_clip_enabled=False,
+                      min_preview_interval=0.0)
+    ws_port, web_port = _free_port(), _free_port()
+    stacker = LiveStacker(cfg, "127.0.0.1", ws_port, web_port)
+    for seed in range(3):
+        stacker.pipeline.ingest(_star_frame(seed))
+    _start(stacker, ws_port)
+    for _ in range(100):
+        try:
+            socket.create_connection(("127.0.0.1", web_port), timeout=0.1).close()
+            break
+        except OSError:
+            time.sleep(0.05)
+
+    with connect(f"ws://127.0.0.1:{web_port}/ws", max_size=None) as c:
+        c.send(_params())
+        status = json.loads(c.recv(timeout=5))
+        assert "channels" in status
+        assert _settle(c) is not None             # and the image arrives

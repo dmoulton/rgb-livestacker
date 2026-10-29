@@ -157,7 +157,6 @@
   </aside>
 
 <script>
-const WS_PORT = "{{WS_PORT}}";
 const $ = (id) => document.getElementById(id);
 const sliders = ["black", "midtones", "gamma", "contrast", "green", "lum"];
 let ws, reconnectTimer, lastUrl;
@@ -482,7 +481,10 @@ try {
 } catch (_) {}
 
 function connect() {
-  ws = new WebSocket(`ws://${location.hostname}:${WS_PORT}`);
+  // same origin, same port as the page (the server relays /ws), so a tunnel or
+  // reverse proxy that forwards only the web port works, and https -> wss
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${scheme}://${location.host}/ws`);
   ws.binaryType = "blob";
   ws.onopen = () => {
     $("conn").className = "ok"; $("conn").textContent = "live";

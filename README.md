@@ -44,7 +44,10 @@ livestack.bat --replay "C:\path\to\old\session"
 livestack.bat --watch  "C:\path\to\NINA\Images"
 ```
 
-Then open <http://localhost:8080/>. Any option below can be added to the
+Then open <http://localhost:8080/>. The page's live connection runs over that same
+port (`/ws`), so it also works through a tunnel or reverse proxy that forwards only
+the web port (e.g. `ssh -R 80:localhost:8080 localhost.run`). Note there is no
+password: anyone with a public tunnel URL can see the live image. Any option below can be added to the
 command. (`--watch` recurses, so point it at NINA's image root.)
 
 **Zoom** is in real image pixels: **100%** shows one image pixel per screen
