@@ -157,7 +157,20 @@ class SceneModeler:
     def __init__(self) -> None:
         self._bg: dict[str, tuple[int, np.ndarray]] = {}
         self._wb: tuple[int, dict[str, float]] | None = None
+        self._mask: tuple[tuple, np.ndarray] | None = None
         self.wb_method: str = "none"
+
+    def source_mask(self, make_lum, cfg: StackConfig, frames: int,
+                    key: tuple) -> np.ndarray:
+        """The bright-source mask, rebuilt on the background cadence rather than
+        for every new frame. `make_lum` is only called on a rebuild. `key` is
+        the crop box, so a changed footprint never reuses a stale mask."""
+        if self._mask is not None and self._mask[0][0] == key \
+                and frames - self._mask[0][1] < cfg.background_every_n_frames:
+            return self._mask[1]
+        mask = source_mask(make_lum(), cfg)
+        self._mask = ((key, frames), mask)
+        return mask
 
     def background(self, name: str, mean: np.ndarray, exclude: np.ndarray,
                    cfg: StackConfig, frames: int) -> np.ndarray:
@@ -234,8 +247,9 @@ def combine_rgb(
             do_bg = False
     sky_ref = None
     if do_bg:
-        lum0 = np.mean(list(means.values()), axis=0)
-        smask = source_mask(lum0, cfg)
+        smask = modeler.source_mask(
+            lambda: np.mean(list(means.values()), axis=0), cfg,
+            sum(frames.values()), (sl[0].start, sl[0].stop, sl[1].start, sl[1].stop))
         exclude = ~bg_valid | smask
         sky_ref = bg_valid & ~smask
 

@@ -35,7 +35,9 @@ def cosmetic_correct(data: np.ndarray, sigma: float = 8.0) -> np.ndarray:
     """
     med = median_filter(data, size=3, mode="nearest")
     resid = data - med
-    scale = 1.4826 * np.median(np.abs(resid - np.median(resid)))
+    # the noise level only needs a sample of the residual map, not all of it
+    sample = resid[::3, ::3]
+    scale = 1.4826 * np.median(np.abs(sample - np.median(sample)))
     if scale <= 0:
         return data
     outlier = np.abs(resid) > sigma * scale

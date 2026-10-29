@@ -56,9 +56,15 @@ class ChannelStack:
                 # Sky read+shot noise: the running std of the dimmer pixels
                 # (the bright fraction is stars / galaxy and must not define
                 # "noise", especially in a crowded field).
-                dim = self._mean <= np.percentile(self._mean[ready], 70.0)
-                base = local[ready & dim]
-                sky_noise = float(np.median(base)) if base.size else 0.0
+                # (estimated from a strided sample: it's a single global figure)
+                s = (slice(None, None, 3), slice(None, None, 3))
+                ready_s, mean_s, local_s = ready[s], self._mean[s], local[s]
+                if ready_s.any():
+                    dim = mean_s <= np.percentile(mean_s[ready_s], 70.0)
+                    base = local_s[ready_s & dim]
+                    sky_noise = float(np.median(base)) if base.size else 0.0
+                else:
+                    sky_noise = 0.0
                 sigma = np.maximum(local, sky_noise)
 
                 # Only clip pixels that are normally quiet. A trail / cosmic

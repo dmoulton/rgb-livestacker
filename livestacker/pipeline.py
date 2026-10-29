@@ -177,8 +177,9 @@ class Pipeline:
 
     def _render(self, params: StretchParams) -> Image.Image | None:
         with self._lock:
-            rgb = None if self._linear_rgb is None else self._linear_rgb.copy()
-            lum = None if self._linear_lum is None else self._linear_lum.copy()
+            # recombine() swaps in new arrays and nothing downstream writes to
+            # these, so a reference is a safe snapshot — no copy needed
+            rgb, lum = self._linear_rgb, self._linear_lum
         if rgb is None:
             return None
         eff = self._resolve_params(params)
