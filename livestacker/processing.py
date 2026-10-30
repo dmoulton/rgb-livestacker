@@ -337,7 +337,7 @@ def combine(
 
     ha = None
     hch = present.get("H")
-    if hch is not None and "R" in proc and hch[2] >= cfg.min_subs_for_background:
+    if hch is not None and "R" in proc:
         # before white balance: this compares Ha with red as measured
         h_flat = flatten("H", hch[0][sl].astype(np.float32), hch[2])
         h_cover = hch[1][sl] & keep

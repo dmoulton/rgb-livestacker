@@ -81,3 +81,9 @@ def test_narrowband_off_gives_the_plain_rgb_image():
     from livestacker.server import params_from_query
     assert params_from_query("narrowband=false").narrowband is False
     assert params_from_query("narrowband=true").narrowband is True
+
+
+def test_ha_is_available_from_the_first_ha_sub():
+    ch = _channels()
+    ch["H"] = (ch["H"][0], ch["H"][1], 1)
+    assert combine(ch, CFG).ha is not None
