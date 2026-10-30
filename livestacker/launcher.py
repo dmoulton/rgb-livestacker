@@ -26,6 +26,7 @@ DEFAULTS = {
     "mode": "watch",
     "folder": "",
     "object_name": "",
+    "object_auto": False,      # the name was filled in from the folder, not typed
     "interval": 2.0,
     "catch_up": True,
     "bias": "",
@@ -86,14 +87,20 @@ class Launcher:
         r += 1
 
         ttk.Label(frm, text="Folder").grid(row=r, column=0, sticky="w", **pad)
-        ttk.Entry(frm, textvariable=self.v["folder"]).grid(row=r, column=1, sticky="ew", **pad)
+        folder_entry = ttk.Entry(frm, textvariable=self.v["folder"])
+        folder_entry.grid(row=r, column=1, sticky="ew", **pad)
+        folder_entry.bind("<FocusOut>", lambda _e: self._autofill_object())
+        folder_entry.bind("<Return>", lambda _e: self._autofill_object())
         ttk.Button(frm, text="Browse…", command=lambda: self._pick_dir("folder")).grid(
             row=r, column=2, sticky="w", **pad); r += 1
 
         ttk.Label(frm, text="Object name").grid(row=r, column=0, sticky="w", **pad)
         ttk.Entry(frm, textvariable=self.v["object_name"]).grid(
             row=r, column=1, sticky="ew", **pad)
-        ttk.Label(frm, text="shown on the web page", foreground="#888").grid(
+        self._filling = False
+        self.v["object_name"].trace_add("write", self._object_edited)
+        ttk.Label(frm, text="from the FITS header; edit to override",
+                  foreground="#888").grid(
             row=r, column=2, sticky="w", **pad); r += 1
 
         self.interval_row = ttk.Frame(frm)
@@ -204,6 +211,33 @@ class Launcher:
                                     initialdir=self.v[key].get() or None)
         if d:
             self.v[key].set(d)
+            if key == "folder":
+                self._autofill_object()
+
+    def _object_edited(self, *_):
+        if not self._filling:                  # the user typed: keep their text
+            self.v["object_auto"].set(False)
+
+    def _autofill_object(self) -> None:
+        """Fill the object name from the folder's FITS headers — unless the user
+        has typed their own."""
+        if self.v["object_name"].get().strip() and not self.v["object_auto"].get():
+            return
+        folder = self.v["folder"].get().strip()
+        if not folder or not Path(folder).is_dir():
+            return
+        from .fitsframe import guess_object     # (pulls in astropy: only when needed)
+        try:
+            guess = guess_object(folder)
+        except Exception:
+            return
+        if guess:
+            self._filling = True
+            try:
+                self.v["object_name"].set(guess)
+                self.v["object_auto"].set(True)
+            finally:
+                self._filling = False
 
     def _pick_file(self, key: str) -> None:
         f = filedialog.askopenfilename(title="Choose master FITS",

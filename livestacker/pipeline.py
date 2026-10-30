@@ -64,6 +64,7 @@ class Pipeline:
         self._ref_stars: np.ndarray | None = None
         self.reference_filter: str = ""
         self.reference_path: str = ""
+        self._detected_object = ""     # OBJECT of the first light frame seen
         self._linear_rgb: np.ndarray | None = None
         self._linear_lum: np.ndarray | None = None
         self._auto_params: StretchParams | None = None
@@ -111,6 +112,9 @@ class Pipeline:
         if not is_light(frame):
             return IngestResult(False, frame.filter, frame.path.name,
                                 f"skipped: IMAGETYP={frame.imagetyp}", skipped=True)
+
+        if not self._detected_object and frame.object_name:
+            self._detected_object = frame.object_name[:120]
 
         if not self.cfg.narrowband_enabled and frame.filter in NARROWBAND_FILTERS:
             return IngestResult(False, frame.filter, frame.path.name,
@@ -257,7 +261,7 @@ class Pipeline:
         flats = sorted(cal.flats) if cal and cal.flats else []
         return {
             "type": "status",
-            "object": self.cfg.object_name,
+            "object": self.cfg.object_name or self._detected_object,
             "reference": self.reference_path,
             "reference_filter": self.reference_filter,
             "calibration": {

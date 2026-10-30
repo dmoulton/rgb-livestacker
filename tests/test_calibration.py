@@ -98,3 +98,22 @@ def test_median_combine_matches_full_median_and_rejects_size_mismatch(tmp_path):
     _write(tmp_path / "odd.fits", np.zeros((H + 1, W)), 1.0)
     with pytest.raises(ValueError, match="differ in size"):
         median_combine(paths + [tmp_path / "odd.fits"])
+
+
+def test_object_name_is_guessed_from_the_first_light_header(tmp_path):
+    from livestacker.fitsframe import guess_object
+    (tmp_path / "flats").mkdir()
+    (tmp_path / "night" / "LIGHT").mkdir(parents=True)
+
+    def put(path, typ, obj):
+        hdr = fits.Header()
+        hdr["IMAGETYP"] = typ
+        if obj:
+            hdr["OBJECT"] = obj
+        fits.PrimaryHDU(np.zeros((6, 8), "float32"), hdr).writeto(path)
+    put(tmp_path / "flats" / "f.fits", "FLAT", "ignored flat target")
+    put(tmp_path / "night" / "LIGHT" / "a.fits", "LIGHT", "IC 434")
+    put(tmp_path / "night" / "LIGHT" / "b.fits", "LIGHT", "other")
+    assert guess_object(tmp_path) == "IC 434"
+    assert guess_object(tmp_path / "flats") == ""        # only a flat: nothing
+    assert guess_object(tmp_path / "missing") == ""

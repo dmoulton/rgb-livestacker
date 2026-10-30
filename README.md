@@ -81,7 +81,7 @@ its own preview, so moving a slider in one never changes another's picture. The
 | `--hot-pixel-sigma N` | hot-pixel detection threshold, robust sigma (default 8) |
 | `--no-sigma-clip` | disable rolling per-pixel trail/cosmic rejection (on by default) |
 | `--sigma-clip-kappa N` | sigma-clip rejection threshold (default 3.0) |
-| `--object-name NAME` | the target's name, shown at the top of the web page and in the tab title |
+| `--object-name NAME` | the target's name, shown at the top of the web page and in the tab title (default: the `OBJECT` header of the first light frame; the launcher fills its box from the folder, and anything you type there wins) |
 | `--no-narrowband` | ignore narrowband (H / O / S) subs — skipped on arrival, so the stack is RGB (+L) only |
 | `--no-background` | disable gradient/background subtraction |
 | `--no-auto-wb` | disable automatic per-channel white balance |

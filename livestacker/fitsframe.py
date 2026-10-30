@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+import os
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +24,7 @@ class Frame:
     xbinning: int | None = None
     ccd_temp: float | None = None
     imagetyp: str = ""   # IMAGETYP keyword, e.g. "LIGHT" / "DARK" ("" if absent)
+    object_name: str = ""  # OBJECT keyword: the target's name ("" if absent)
 
 
 # Map common filter-name spellings onto single-letter RGB channels. Anything
@@ -81,6 +83,7 @@ def _frame_from(path: Path, header, data: np.ndarray) -> Frame:
         xbinning=int(binning) if binning is not None else None,
         ccd_temp=_num("CCD-TEMP"),
         imagetyp=str(header.get("IMAGETYP", "") or "").strip(),
+        object_name=str(header.get("OBJECT", "") or "").strip(),
     )
 
 
@@ -131,3 +134,25 @@ def median_combine(paths: list[Path], strip_rows: int = 128) -> np.ndarray:
                 strip[i] = _image_hdu(hdul).section[r0:r1]
         out[r0:r1] = np.median(strip, axis=0)
     return out
+
+
+def guess_object(folder: str | Path, max_files: int = 60) -> str:
+    """The target name (OBJECT keyword) of the first light frame found under
+    `folder`, or "" — only headers are read, and at most `max_files` files, so
+    it is cheap even on a big or networked folder."""
+    seen = 0
+    for dirpath, dirnames, filenames in os.walk(folder):
+        dirnames.sort()
+        for name in sorted(filenames):
+            if not name.lower().endswith((".fits", ".fit", ".fts")):
+                continue
+            seen += 1
+            if seen > max_files:
+                return ""
+            try:
+                frame, _ = read_header(Path(dirpath) / name)
+            except Exception:
+                continue
+            if is_light(frame) and frame.object_name:
+                return frame.object_name
+    return ""

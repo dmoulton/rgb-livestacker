@@ -142,3 +142,24 @@ def test_object_name_reaches_the_status_and_the_command_line():
     p = Pipeline(StackConfig(object_name="IC 434"))
     assert p.status()["object"] == "IC 434"
     assert Pipeline(StackConfig()).status()["object"] == ""
+
+
+def test_object_name_falls_back_to_the_fits_header_and_can_be_overridden():
+    base = dict(hot_pixel_enabled=False, background_enabled=False,
+                auto_white_balance=False, sigma_clip_enabled=False)
+    fr = _star_frame(seed=0)
+    fr.object_name = "IC 434"
+    auto = Pipeline(StackConfig(**base))
+    assert auto.status()["object"] == ""                   # nothing seen yet
+    auto.ingest(fr)
+    assert auto.status()["object"] == "IC 434"
+
+    typed = Pipeline(StackConfig(**base, object_name="My Horsehead"))
+    typed.ingest(fr)
+    assert typed.status()["object"] == "My Horsehead"      # the typed name wins
+
+    dark = _star_frame(seed=2)
+    dark.imagetyp, dark.object_name = "DARK", "not a target"
+    p = Pipeline(StackConfig(**base))
+    p.ingest(dark)
+    assert p.status()["object"] == ""                      # darks don't name the target
