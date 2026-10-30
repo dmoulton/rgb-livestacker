@@ -137,7 +137,8 @@ its own preview, so moving a slider in one never changes another's picture. The
    the Ha stack minus the stars (scaled from the measured Ha/R star-flux ratio)
    is added into red, so the nebula's emission is boosted without brightening
    stars. Strength 1 puts the brightest Ha at about half-scale in red, whatever
-   the Ha exposure time. It is per browser, like the other display settings.
+   the Ha exposure time. It is per browser, like the other display settings, and an **Include
+   narrowband** checkbox next to it switches back to RGB only.
    With only luminance frames (no colour yet) the L stack is shown as a
    monochrome image, and becomes LRGB as colour subs arrive.
    Dark / flat / bias frames found in a watched tree (by `IMAGETYP`) are skipped.

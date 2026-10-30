@@ -66,3 +66,18 @@ def test_ha_strength_adds_red_only_where_the_nebula_is():
     assert b[BLOB][0] > a[BLOB][0] + 20                  # red up at the nebula
     assert np.abs(b[BLOB][1:] - a[BLOB][1:]).max() == 0  # green / blue untouched
     assert np.abs(b[5, 5] - a[5, 5]).max() <= 2          # empty sky unchanged
+
+
+def test_narrowband_off_gives_the_plain_rgb_image():
+    p = Pipeline(CFG)
+    out = combine(_channels(), CFG)
+    p._linear_rgb, p._linear_ha = out.rgb, out.ha
+    plain = np.asarray(p._render(StretchParams(auto=False, ha=0.0)))
+    off = np.asarray(p._render(StretchParams(auto=False, ha=2.0, narrowband=False)))
+    on = np.asarray(p._render(StretchParams(auto=False, ha=2.0, narrowband=True)))
+    assert np.array_equal(off, plain)
+    assert not np.array_equal(on, plain)
+    # the page's saved link carries it as a query value
+    from livestacker.server import params_from_query
+    assert params_from_query("narrowband=false").narrowband is False
+    assert params_from_query("narrowband=true").narrowband is True

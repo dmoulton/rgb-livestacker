@@ -135,6 +135,10 @@
       <input type="range" id="lum" min="0" max="1" step="0.02" value="1">
     </div>
     <div class="ctl" id="ha-ctl" hidden>
+      <div class="row">
+        <input type="checkbox" id="nb" checked>
+        <label for="nb">Include narrowband</label>
+      </div>
       <label for="ha">Ha enhance (into red) <span id="ha-v">0.00</span></label>
       <input type="range" id="ha" min="0" max="3" step="0.05" value="0.8">
     </div>
@@ -181,6 +185,7 @@ function currentParams() {
     green: parseFloat($("green").value),
     lum: parseFloat($("lum").value),
     ha: parseFloat($("ha").value),
+    narrowband: $("nb").checked,
     full: view.full,
   };
 }
@@ -206,6 +211,7 @@ function restoreParams() {
 
 function applyParams(p) {
   if (p.auto != null) $("auto").checked = !!p.auto;
+  if (p.narrowband != null) $("nb").checked = !!p.narrowband;
   for (const id of sliders) {
     if (p[id] != null && isFinite(p[id])) $(id).value = p[id];
   }
@@ -239,6 +245,7 @@ function reflectValues() {
   $("green-v").textContent = (+$("green").value).toFixed(2);
   $("lum-v").textContent = (+$("lum").value).toFixed(2);
   $("ha-v").textContent = (+$("ha").value).toFixed(2);
+  $("ha").disabled = !$("nb").checked;
   const dim = $("auto").checked;
   $("black").disabled = dim;
   $("midtones").disabled = dim;
@@ -249,6 +256,7 @@ sliders.forEach((id) => $(id).addEventListener("input", () => {
   sendParams();
 }));
 $("auto").addEventListener("change", () => { reflectValues(); sendParams(); });
+$("nb").addEventListener("change", () => { reflectValues(); sendParams(); });
 
 function renderStatus(s) {
   if (s.size) {                        // full stack size, for true-pixel zoom

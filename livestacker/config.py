@@ -103,6 +103,7 @@ class StretchParams:
                                 # 0 = RGB only .. 1 = full LRGB
     ha: float = 0.0             # Ha enhancement (when an Ha channel exists):
                                 # how much of the nebula's Ha is added to red
+    narrowband: bool = True     # use narrowband channels when present; off = RGB(+L) only
     auto: bool = True           # let the pipeline pick black/midtones each update
     full: bool = False          # send this browser the preview at full resolution
                                 # (zoomed in past what the downscaled preview shows)

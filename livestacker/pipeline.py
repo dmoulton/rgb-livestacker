@@ -190,6 +190,7 @@ class Pipeline:
             merged.green = params.green
             merged.lum = params.lum
             merged.ha = params.ha
+            merged.narrowband = params.narrowband
             return merged
         return params
 
@@ -204,7 +205,7 @@ class Pipeline:
         eff = self._resolve_params(params)
         if lum is not None and eff.lum > 1e-3:
             rgb = apply_luminance(rgb, lum, min(eff.lum, 1.0), chroma)
-        if ha is not None and eff.ha > 1e-3:
+        if ha is not None and eff.narrowband and eff.ha > 1e-3:
             rgb = add_ha(rgb, ha, eff.ha)
         return Image.fromarray(apply_stretch(rgb, eff), mode="RGB")
 
