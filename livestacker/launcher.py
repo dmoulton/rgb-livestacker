@@ -86,7 +86,7 @@ class Launcher:
         ttk.Label(frm, text="Folder").grid(row=r, column=0, sticky="w", **pad)
         ttk.Entry(frm, textvariable=self.v["folder"]).grid(row=r, column=1, sticky="ew", **pad)
         ttk.Button(frm, text="Browse…", command=lambda: self._pick_dir("folder")).grid(
-            row=r, column=2, **pad); r += 1
+            row=r, column=2, sticky="w", **pad); r += 1
 
         self.interval_row = ttk.Frame(frm)
         self.interval_row.grid(row=r, column=0, columnspan=3, sticky="w", **pad)
@@ -176,6 +176,10 @@ class Launcher:
         self.log["yscrollcommand"] = sb.set
 
         self._sync()
+        # open wide enough that the path boxes have room (they stretch with the window)
+        self.root.update_idletasks()
+        self.root.geometry(f"{max(self.root.winfo_reqwidth(), 960)}x"
+                           f"{self.root.winfo_reqheight()}")
 
     # -- helpers ------------------------------------------------------
 
