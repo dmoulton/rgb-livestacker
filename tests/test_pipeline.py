@@ -113,3 +113,23 @@ def test_luminance_only_session_shows_a_monochrome_image():
     a = np.asarray(Image.open(io.BytesIO(jpeg)).convert("RGB")).astype(int)
     assert a.std() > 5                             # a real picture, not a blank
     assert np.abs(a[..., 0] - a[..., 1]).max() <= 2 and np.abs(a[..., 1] - a[..., 2]).max() <= 2
+
+
+def test_narrowband_can_be_switched_off_on_the_server():
+    from livestacker.__main__ import build_parser
+    from livestacker.fitsframe import normalise_filter
+    assert [normalise_filter(n) for n in ("Ha", "H-alpha", "OIII", "S2", "H")] == \
+        ["H", "H", "O", "S", "H"]
+    assert build_parser().parse_args(["--watch", "x", "--no-narrowband"]).no_narrowband
+
+    base = dict(hot_pixel_enabled=False, background_enabled=False,
+                auto_white_balance=False, sigma_clip_enabled=False)
+    for enabled, expect_stacked in ((True, True), (False, False)):
+        p = Pipeline(StackConfig(**base, narrowband_enabled=enabled))
+        assert p.ingest(_star_frame(seed=0)).ok            # an R sub sets the reference
+        ha = _star_frame(seed=1)
+        ha.filter = "H"
+        r = p.ingest(ha)
+        assert r.ok is expect_stacked
+        assert r.skipped is (not expect_stacked)
+        assert ("H" in p.status()["channels"]) is expect_stacked

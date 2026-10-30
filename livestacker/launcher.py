@@ -39,6 +39,7 @@ DEFAULTS = {
     "sigma_clip_kappa": 3.0,
     "background": True,
     "auto_wb": True,
+    "narrowband": True,
     "preview_px": 1600,
     "share_lan": False,
     "web_port": 8080,
@@ -146,7 +147,8 @@ class Launcher:
         opts = ttk.Frame(frm)
         opts.grid(row=r, column=0, columnspan=3, sticky="w", **pad); r += 1
         for key, label in (("hot_pixel", "Hot-pixel fix"), ("sigma_clip", "Sigma-clip"),
-                           ("background", "Background removal"), ("auto_wb", "Auto white balance")):
+                           ("background", "Background removal"), ("auto_wb", "Auto white balance"),
+                           ("narrowband", "Narrowband")):
             ttk.Checkbutton(opts, text=label, variable=self.v[key]).pack(side="left", padx=(0, 12))
 
         net = ttk.Frame(frm)
@@ -246,6 +248,8 @@ class Launcher:
             cmd.append("--no-background")
         if not self.v["auto_wb"].get():
             cmd.append("--no-auto-wb")
+        if not self.v["narrowband"].get():
+            cmd.append("--no-narrowband")
         cmd += ["--preview-px", self.v["preview_px"].get()]
         for edge in ("top", "bottom", "left", "right"):
             val = str(self.v[f"crop_{edge}"].get()).strip()

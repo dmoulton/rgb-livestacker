@@ -58,6 +58,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sigma-clip-kappa", type=float, default=3.0,
                    help="sigma-clip rejection threshold (default: 3.0)")
 
+    p.add_argument("--no-narrowband", action="store_true",
+                   help="ignore narrowband (H / O / S) subs: skip them on arrival "
+                        "so the stack is RGB (+L) only")
     p.add_argument("--no-background", action="store_true",
                    help="disable background/gradient subtraction")
     p.add_argument("--no-auto-wb", action="store_true",
@@ -95,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.getLogger("livestacker").setLevel(logging.INFO)
 
     cfg = StackConfig(
+        narrowband_enabled=not args.no_narrowband,
         background_enabled=not args.no_background,
         auto_white_balance=not args.no_auto_wb,
         background_box=args.background_box,

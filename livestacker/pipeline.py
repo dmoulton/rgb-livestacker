@@ -20,7 +20,7 @@ from PIL import Image
 from .accumulator import ChannelStack
 from .calibration import Calibrator
 from .config import RGB_FILTERS, StackConfig, StretchParams
-from .fitsframe import Frame, is_light
+from .fitsframe import NARROWBAND_FILTERS, Frame, is_light
 from .processing import (
     SceneModeler, add_ha, apply_luminance, apply_stretch, auto_stretch, combine,
     lrgb_chroma,
@@ -111,6 +111,10 @@ class Pipeline:
         if not is_light(frame):
             return IngestResult(False, frame.filter, frame.path.name,
                                 f"skipped: IMAGETYP={frame.imagetyp}", skipped=True)
+
+        if not self.cfg.narrowband_enabled and frame.filter in NARROWBAND_FILTERS:
+            return IngestResult(False, frame.filter, frame.path.name,
+                                "skipped: narrowband is switched off", skipped=True)
 
         data = self.calibrator.apply(frame) if self.calibrator else frame.data
         data = self._crop_edges(data)

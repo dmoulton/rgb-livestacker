@@ -88,6 +88,9 @@ class StackConfig:
     # The first frame becomes the registration reference for the whole session,
     # so it must actually contain stars (not a flat, a cloudy frame, ...).
     min_reference_stars: int = 8
+    # Stack narrowband (H / O / S) subs along with the broadband ones. Off: they
+    # are skipped on arrival, so a mixed capture folder gives a plain RGB(+L) stack.
+    narrowband_enabled: bool = True
 
 
 @dataclass

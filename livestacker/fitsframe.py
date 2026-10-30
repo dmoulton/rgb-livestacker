@@ -33,7 +33,12 @@ _FILTER_ALIASES = {
     "GREEN": "G", "G": "G",
     "BLUE": "B", "B": "B",
     "LUM": "L", "LUMINANCE": "L", "L": "L", "CLEAR": "L",
+    "HA": "H", "H-ALPHA": "H", "HALPHA": "H", "H": "H",
+    "OIII": "O", "O3": "O", "O-III": "O", "O": "O",
+    "SII": "S", "S2": "S", "S-II": "S", "S": "S",
 }
+
+NARROWBAND_FILTERS = ("H", "O", "S")
 
 
 def normalise_filter(name: str | None) -> str:
