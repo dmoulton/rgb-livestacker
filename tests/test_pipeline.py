@@ -94,3 +94,22 @@ def test_a_starless_first_frame_is_not_adopted_as_the_reference():
 
     assert p.ingest(_frame_of(_star_frame(seed=0).data)).ok   # a real frame takes over...
     assert p.ingest(_frame_of(_star_frame(seed=1).data)).ok   # ...and later frames register
+
+
+def test_luminance_only_session_shows_a_monochrome_image():
+    import io
+    from PIL import Image
+    from livestacker.config import StretchParams
+    cfg = StackConfig(hot_pixel_enabled=False, background_enabled=False,
+                      sigma_clip_enabled=False, min_subs_for_background=1)
+    p = Pipeline(cfg)
+    for seed in range(3):
+        fr = _star_frame(seed=seed)
+        fr.filter = "L"
+        assert p.ingest(fr).ok
+    assert p.status()["luminance"] is False       # nothing to blend: it *is* the image
+    jpeg = p.render_preview(StretchParams(auto=True))
+    assert jpeg is not None
+    a = np.asarray(Image.open(io.BytesIO(jpeg)).convert("RGB")).astype(int)
+    assert a.std() > 5                             # a real picture, not a blank
+    assert np.abs(a[..., 0] - a[..., 1]).max() <= 2 and np.abs(a[..., 1] - a[..., 2]).max() <= 2

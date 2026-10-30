@@ -133,6 +133,8 @@ its own preview, so moving a slider in one never changes another's picture. The
    While a backlog of subs is queued (a catch-up, a fast replay) the combined
    image is rebuilt when the queue drains or every 10 s, not after every sub, and
    slider moves are rendered on their own thread so they stay responsive.
+   With only luminance frames (no colour yet) the L stack is shown as a
+   monochrome image, and becomes LRGB as colour subs arrive.
    Dark / flat / bias frames found in a watched tree (by `IMAGETYP`) are skipped.
 9. **Linked stretch**: one black/midtones/gamma/contrast curve through all
    three channels, plus an optional green-noise (SCNR) slider, applied live in

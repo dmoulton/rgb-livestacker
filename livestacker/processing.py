@@ -211,11 +211,16 @@ def combine_rgb(
 
     The result is cropped to the bounding box of the region every present
     colour channel covers, so the ragged dither border never appears. Missing
-    colour channels are filled from the mean of the present ones.
+    colour channels are filled from the mean of the present ones. With only a
+    luminance stack, the result is that stack as a grey image (R = G = B).
     """
     present = {k: v for k, v in channels.items()
                if v is not None and v[0] is not None}
     color = {k: v for k, v in present.items() if k in ("R", "G", "B")}
+    # luminance only (no colour filters yet): show it as a monochrome image
+    mono = not color and "L" in present
+    if mono:
+        color = {"L": present["L"]}
     if not color:
         return None, None
     if modeler is None:
@@ -261,7 +266,7 @@ def combine_rgb(
 
     proc = {name: flatten(name, img, frames[name]) for name, img in means.items()}
 
-    if cfg.auto_white_balance:
+    if cfg.auto_white_balance and not mono:
         total = sum(frames.values())
         for name, s in modeler.white_balance(proc, keep, cfg, total).items():
             if name in proc:
@@ -274,7 +279,7 @@ def combine_rgb(
     rgb = np.clip(rgb / norm, 0.0, None).astype(np.float32)
 
     lum = None
-    lch = present.get("L")
+    lch = None if mono else present.get("L")
     if lch is not None and lch[2] >= cfg.min_subs_for_background:
         l_mean = lch[0][sl].astype(np.float32)
         l_cover = lch[1][sl] & keep
