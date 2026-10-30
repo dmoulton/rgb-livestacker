@@ -134,6 +134,10 @@
       <label for="lum">Luminance (LRGB) <span id="lum-v">1.00</span></label>
       <input type="range" id="lum" min="0" max="1" step="0.02" value="1">
     </div>
+    <div class="ctl" id="ha-ctl" hidden>
+      <label for="ha">Ha enhance (into red) <span id="ha-v">0.00</span></label>
+      <input type="range" id="ha" min="0" max="3" step="0.05" value="0.8">
+    </div>
     <a class="btn" id="save" href="/snapshot.png" download="livestack.png">Save full-res PNG</a>
 
     <h2>Channels</h2>
@@ -158,7 +162,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const sliders = ["black", "midtones", "gamma", "contrast", "green", "lum"];
+const sliders = ["black", "midtones", "gamma", "contrast", "green", "lum", "ha"];
 let ws, reconnectTimer, lastUrl;
 const preview = $("preview"), viewport = $("viewport");
 // z: device pixels per image pixel (1 = 100%); fit: follow the window size;
@@ -176,6 +180,7 @@ function currentParams() {
     contrast: parseFloat($("contrast").value),
     green: parseFloat($("green").value),
     lum: parseFloat($("lum").value),
+    ha: parseFloat($("ha").value),
     full: view.full,
   };
 }
@@ -233,6 +238,7 @@ function reflectValues() {
   $("contrast-v").textContent = (+$("contrast").value).toFixed(2);
   $("green-v").textContent = (+$("green").value).toFixed(2);
   $("lum-v").textContent = (+$("lum").value).toFixed(2);
+  $("ha-v").textContent = (+$("ha").value).toFixed(2);
   const dim = $("auto").checked;
   $("black").disabled = dim;
   $("midtones").disabled = dim;
@@ -256,6 +262,7 @@ function renderStatus(s) {
   $("rejected").textContent = s.rejected;
   $("elapsed").textContent = `${s.elapsed} s`;
   $("lum-ctl").hidden = !s.luminance;
+  $("ha-ctl").hidden = !s.ha;
   if (s.calibration) {
     const c = s.calibration;
     $("cal-hot").textContent = c.hot_pixel ? "on" : "off";

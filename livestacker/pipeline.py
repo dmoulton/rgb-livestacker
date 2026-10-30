@@ -22,7 +22,7 @@ from .calibration import Calibrator
 from .config import RGB_FILTERS, StackConfig, StretchParams
 from .fitsframe import Frame, is_light
 from .processing import (
-    SceneModeler, apply_luminance, apply_stretch, auto_stretch, combine_rgb,
+    SceneModeler, add_ha, apply_luminance, apply_stretch, auto_stretch, combine,
     lrgb_chroma,
 )
 
@@ -69,6 +69,7 @@ class Pipeline:
         self._auto_params: StretchParams | None = None
         self._auto_params_lrgb: StretchParams | None = None   # stretch of the L-carrying image
         self._chroma: np.ndarray | None = None
+        self._linear_ha: np.ndarray | None = None
         self._scene = SceneModeler()
         self._lock = threading.Lock()
         self.started_at = time.time()
@@ -160,7 +161,8 @@ class Pipeline:
                        st.covered_mask(self.cfg.coverage_min_frac),
                        st.frames)
                 for name, st in self.channels.items()}
-        rgb, lum = combine_rgb(data, self.cfg, self._scene)
+        out = combine(data, self.cfg, self._scene)
+        rgb, lum, ha = out.rgb, out.lum, out.ha
         chroma = auto_lrgb = None
         if rgb is not None and lum is not None:
             chroma = lrgb_chroma(rgb)
@@ -170,6 +172,7 @@ class Pipeline:
         with self._lock:
             self._linear_rgb = rgb
             self._linear_lum = lum
+            self._linear_ha = ha
             self._chroma = chroma
             self._auto_params = auto_stretch(rgb) if rgb is not None else None
             self._auto_params_lrgb = auto_lrgb
@@ -186,6 +189,7 @@ class Pipeline:
             merged.contrast = params.contrast
             merged.green = params.green
             merged.lum = params.lum
+            merged.ha = params.ha
             return merged
         return params
 
@@ -194,11 +198,14 @@ class Pipeline:
             # recombine() swaps in new arrays and nothing downstream writes to
             # these, so a reference is a safe snapshot — no copy needed
             rgb, lum, chroma = self._linear_rgb, self._linear_lum, self._chroma
+            ha = self._linear_ha
         if rgb is None:
             return None
         eff = self._resolve_params(params)
         if lum is not None and eff.lum > 1e-3:
             rgb = apply_luminance(rgb, lum, min(eff.lum, 1.0), chroma)
+        if ha is not None and eff.ha > 1e-3:
+            rgb = add_ha(rgb, ha, eff.ha)
         return Image.fromarray(apply_stretch(rgb, eff), mode="RGB")
 
     def render_preview(self, params: StretchParams) -> bytes | None:
@@ -258,6 +265,7 @@ class Pipeline:
                                   if self.cfg.auto_white_balance else "off"),
             },
             "luminance": self._linear_lum is not None,
+            "ha": self._linear_ha is not None,
             # full stack size + the preview limit, so a page can zoom in real
             # image pixels and know when it needs the full-resolution render
             "size": (None if self._linear_rgb is None

@@ -101,6 +101,8 @@ class StretchParams:
     green: float = 0.0          # green-noise removal (SCNR), 0 = off .. 1 = full
     lum: float = 1.0            # luminance (L) blend when an L channel exists,
                                 # 0 = RGB only .. 1 = full LRGB
+    ha: float = 0.0             # Ha enhancement (when an Ha channel exists):
+                                # how much of the nebula's Ha is added to red
     auto: bool = True           # let the pipeline pick black/midtones each update
     full: bool = False          # send this browser the preview at full resolution
                                 # (zoomed in past what the downscaled preview shows)
@@ -132,4 +134,5 @@ class StretchParams:
 _LIMITS = {
     "black": (0.0, 0.98), "midtones": (0.01, 0.99), "gamma": (0.1, 5.0),
     "contrast": (0.1, 4.0), "green": (0.0, 1.0), "lum": (0.0, 1.0),
+    "ha": (0.0, 3.0),
 }

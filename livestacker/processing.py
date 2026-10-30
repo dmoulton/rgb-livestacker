@@ -10,6 +10,7 @@ back into the raw accumulation.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 import numpy as np
 from scipy.ndimage import binary_dilation, binary_erosion
@@ -68,19 +69,11 @@ def _percentile_scales(channels: dict[str, np.ndarray],
     return {name: target / h for name, h in highs.items()}
 
 
-def star_flux_scales(channels: dict[str, np.ndarray], valid: np.ndarray,
-                     cfg: StackConfig) -> dict[str, float] | None:
-    """White balance from the ensemble of field stars: scale R/G/B so the
-    *median* star has equal flux in all three. Star colour reflects the system
-    throughput per filter (bandpass, QE, atmospheric extinction) — exactly what
-    white balance should equalise — and is immune to the nebula's line
-    emission. Returns None if fewer than `wb_min_stars` usable stars are found,
-    so the caller can fall back.
-    """
-    if not all(c in channels for c in ("R", "G", "B")):
-        return None
-
-    lum = np.mean([channels[c] for c in ("R", "G", "B")], axis=0)
+def select_stars(lum: np.ndarray, valid: np.ndarray,
+                 cfg: StackConfig) -> np.ndarray | None:
+    """(N, 2) x,y positions of round, well-sampled, mid-brightness field stars in
+    `lum` — good for comparing star fluxes between channels. None if fewer than
+    `wb_min_stars` usable stars are found."""
     _, med, std = sigma_clipped_stats(lum[valid], sigma=3.0)
     if not np.isfinite(std) or std <= 0:
         return None
@@ -122,29 +115,66 @@ def star_flux_scales(channels: dict[str, np.ndarray], valid: np.ndarray,
     idx = np.where(good)[0]
     if idx.size > cfg.wb_max_stars:
         idx = idx[np.argsort(flux[idx])[-cfg.wb_max_stars:]]
-    ap = CircularAperture(np.column_stack([x[idx], y[idx]]), r=2.5 * cfg.wb_fwhm)
+    return np.column_stack([x[idx], y[idx]])
 
-    sums = {}
-    for c in ("R", "G", "B"):
-        phot = aperture_photometry(channels[c], ap)
-        sums[c] = np.asarray(phot["aperture_sum"], dtype=float)
 
+def _star_sums(img: np.ndarray, xy: np.ndarray, cfg: StackConfig) -> np.ndarray:
+    ap = CircularAperture(xy, r=2.5 * cfg.wb_fwhm)
+    return np.asarray(aperture_photometry(img, ap)["aperture_sum"], dtype=float)
+
+
+def _robust_median(a: np.ndarray) -> float:
+    mid = np.median(a)
+    mad = np.median(np.abs(a - mid)) or 1e-6
+    keep = np.abs(a - mid) < 3.0 * 1.4826 * mad
+    return float(np.median(a[keep])) if keep.any() else float(mid)
+
+
+def star_flux_scales(channels: dict[str, np.ndarray], valid: np.ndarray,
+                     cfg: StackConfig) -> dict[str, float] | None:
+    """White balance from the ensemble of field stars: scale R/G/B so the
+    *median* star has equal flux in all three. Star colour reflects the system
+    throughput per filter (bandpass, QE, atmospheric extinction) — exactly what
+    white balance should equalise — and is immune to the nebula's line
+    emission. Returns None if fewer than `wb_min_stars` usable stars are found,
+    so the caller can fall back.
+    """
+    if not all(c in channels for c in ("R", "G", "B")):
+        return None
+
+    lum = np.mean([channels[c] for c in ("R", "G", "B")], axis=0)
+    xy = select_stars(lum, valid, cfg)
+    if xy is None:
+        return None
+
+    sums = {c: _star_sums(channels[c], xy, cfg) for c in ("R", "G", "B")}
     ok = (sums["R"] > 0) & (sums["G"] > 0) & (sums["B"] > 0)
     if ok.sum() < cfg.wb_min_stars:
         return None
     lg = np.log(sums["G"][ok] / sums["R"][ok])
     lb = np.log(sums["B"][ok] / sums["R"][ok])
 
-    def robust_median(a: np.ndarray) -> float:
-        mid = np.median(a)
-        mad = np.median(np.abs(a - mid)) or 1e-6
-        keep = np.abs(a - mid) < 3.0 * 1.4826 * mad
-        return float(np.median(a[keep])) if keep.any() else float(mid)
-
-    s = {"R": 1.0, "G": float(np.exp(-robust_median(lg))),
-         "B": float(np.exp(-robust_median(lb)))}
+    s = {"R": 1.0, "G": float(np.exp(-_robust_median(lg))),
+         "B": float(np.exp(-_robust_median(lb)))}
     g = (s["R"] * s["G"] * s["B"]) ** (1.0 / 3.0)   # keep overall brightness
     return {k: v / g for k, v in s.items()}
+
+
+def ha_continuum_ratio(ha: np.ndarray, red: np.ndarray, rgb_lum: np.ndarray,
+                       valid: np.ndarray, cfg: StackConfig) -> float:
+    """How much of a star's red-filter flux shows up in the Ha filter: the
+    robust median over field stars of flux(Ha) / flux(R). Stars are continuum
+    sources, so `ha - ratio * red` cancels them and leaves the nebula's Ha
+    emission. Falls back to matching bright percentiles when too few stars."""
+    xy = select_stars(rgb_lum, valid, cfg)
+    if xy is not None:
+        sh, sr = _star_sums(ha, xy, cfg), _star_sums(red, xy, cfg)
+        ok = (sh > 0) & (sr > 0)
+        if ok.sum() >= cfg.wb_min_stars:
+            return float(np.exp(_robust_median(np.log(sh[ok] / sr[ok]))))
+    hi_r = float(np.percentile(red[valid], 99.5))
+    hi_h = float(np.percentile(ha[valid], 99.5))
+    return hi_h / hi_r if hi_r > 0 else 0.0
 
 
 # -- scene model cache ------------------------------------------------
@@ -158,7 +188,20 @@ class SceneModeler:
         self._bg: dict[str, tuple[int, np.ndarray]] = {}
         self._wb: tuple[int, dict[str, float]] | None = None
         self._mask: tuple[tuple, np.ndarray] | None = None
+        self._ha_ratio: tuple[int, float] | None = None
         self.wb_method: str = "none"
+
+    def ha_ratio(self, ha: np.ndarray, red: np.ndarray, rgb_lum: np.ndarray,
+                 valid: np.ndarray, cfg: StackConfig, frames: int) -> float:
+        """The Ha/R star-flux ratio, refreshed on the same cadence as the
+        background and white balance."""
+        if self._ha_ratio is not None \
+                and frames - self._ha_ratio[0] < cfg.background_every_n_frames:
+            return self._ha_ratio[1]
+        ratio = ha_continuum_ratio(ha, red, rgb_lum, valid, cfg)
+        self._ha_ratio = (frames, ratio)
+        log.info("Ha / R star-flux ratio: %.3f", ratio)
+        return ratio
 
     def source_mask(self, make_lum, cfg: StackConfig, frames: int,
                     key: tuple) -> np.ndarray:
@@ -200,14 +243,40 @@ class SceneModeler:
 
 # -- combine ----------------------------------------------------------
 
+@dataclass
+class Combined:
+    rgb: np.ndarray | None = None      # (H, W, 3) linear, ~0..1
+    lum: np.ndarray | None = None      # (H, W) matching L stack, NaN where uncovered
+    ha: np.ndarray | None = None       # (H, W) Ha emission minus continuum, in
+                                       # red-channel units (signed, peak ~HA_PEAK)
+
+
+# Where the brightest Ha emission lands in display units at strength 1.0. The
+# Ha layer is normalised by its own bright end rather than by exposure / gain,
+# so the strength slider means the same thing whatever the Ha sub length was.
+HA_PEAK = 0.5
+
+
 def combine_rgb(
     channels: dict[str, tuple[np.ndarray, np.ndarray, int]],
     cfg: StackConfig,
     modeler: SceneModeler | None = None,
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """`combine` reduced to `(rgb, lum)`."""
+    out = combine(channels, cfg, modeler)
+    return out.rgb, out.lum
+
+
+def combine(
+    channels: dict[str, tuple[np.ndarray, np.ndarray, int]],
+    cfg: StackConfig,
+    modeler: SceneModeler | None = None,
+) -> Combined:
     """Build a linear (H, W, 3) RGB array from per-channel
     `(mean, coverage, frame_count)`, and — if a luminance (`L`) channel is
-    present — a matching (H, W) luminance array on the same 0..1 scale.
+    present — a matching (H, W) luminance array on the same 0..1 scale, and —
+    if an Ha (`H`) channel is present — the nebula's Ha emission with the
+    stars subtracted, for adding into red.
 
     The result is cropped to the bounding box of the region every present
     colour channel covers, so the ragged dither border never appears. Missing
@@ -222,7 +291,7 @@ def combine_rgb(
     if mono:
         color = {"L": present["L"]}
     if not color:
-        return None, None
+        return Combined()
     if modeler is None:
         modeler = SceneModeler()
 
@@ -233,7 +302,7 @@ def combine_rgb(
         common = binary_erosion(common, iterations=cfg.display_border_erode)
     ys, xs = np.where(common)
     if ys.size == 0:
-        return None, None
+        return Combined()
     sl = (slice(ys.min(), ys.max() + 1), slice(xs.min(), xs.max() + 1))
     keep = common[sl]
 
@@ -266,6 +335,26 @@ def combine_rgb(
 
     proc = {name: flatten(name, img, frames[name]) for name, img in means.items()}
 
+    ha = None
+    hch = present.get("H")
+    if hch is not None and "R" in proc and hch[2] >= cfg.min_subs_for_background:
+        # before white balance: this compares Ha with red as measured
+        h_flat = flatten("H", hch[0][sl].astype(np.float32), hch[2])
+        h_cover = hch[1][sl] & keep
+        ratio = modeler.ha_ratio(h_flat, proc["R"],
+                                 np.mean(list(proc.values()), axis=0), keep, cfg,
+                                 sum(frames.values()) + hch[2])
+        resid = h_flat - ratio * proc["R"]
+        sample = resid[::3, ::3][h_cover[::3, ::3]]
+        if sample.size:
+            # the two skies rarely cancel exactly: re-zero on the median
+            resid = resid - np.median(sample)
+        resid = resid * h_cover
+        top = resid[::3, ::3][h_cover[::3, ::3]]
+        peak = float(np.percentile(top, 99.5)) if top.size else 0.0
+        if peak > 0:
+            ha = (resid * (HA_PEAK / peak)).astype(np.float32)
+
     if cfg.auto_white_balance and not mono:
         total = sum(frames.values())
         for name, s in modeler.white_balance(proc, keep, cfg, total).items():
@@ -289,7 +378,7 @@ def combine_rgb(
             lum = np.where(l_cover, np.clip(l_flat / l_norm, 0.0, None), np.nan)
             lum = lum.astype(np.float32)
 
-    return rgb, lum
+    return Combined(rgb, lum, ha)
 
 
 # -- luminance (LRGB) -------------------------------------------------
@@ -330,6 +419,13 @@ def apply_luminance(rgb: np.ndarray, lum: np.ndarray, blend: float,
     out = (1.0 - blend) * rgb + blend * coloured
     out = np.where(have[..., None], out, rgb)
     return np.clip(out, 0.0, None).astype(np.float32)
+
+
+def add_ha(rgb: np.ndarray, ha: np.ndarray, strength: float) -> np.ndarray:
+    """Add the Ha emission layer into the red channel at `strength`."""
+    out = rgb.copy()
+    out[..., 0] += strength * ha
+    return np.clip(out, 0.0, None)
 
 
 # -- linked display stretch --------------------------------------------

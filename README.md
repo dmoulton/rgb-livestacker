@@ -133,6 +133,11 @@ its own preview, so moving a slider in one never changes another's picture. The
    While a backlog of subs is queued (a catch-up, a fast replay) the combined
    image is rebuilt when the queue drains or every 10 s, not after every sub, and
    slider moves are rendered on their own thread so they stay responsive.
+   With an Ha channel (`FILTER` = `H`) and RGB, an **Ha enhance** slider appears:
+   the Ha stack minus the stars (scaled from the measured Ha/R star-flux ratio)
+   is added into red, so the nebula's emission is boosted without brightening
+   stars. Strength 1 puts the brightest Ha at about half-scale in red, whatever
+   the Ha exposure time. It is per browser, like the other display settings.
    With only luminance frames (no colour yet) the L stack is shown as a
    monochrome image, and becomes LRGB as colour subs arrive.
    Dark / flat / bias frames found in a watched tree (by `IMAGETYP`) are skipped.
