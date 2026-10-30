@@ -58,6 +58,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sigma-clip-kappa", type=float, default=3.0,
                    help="sigma-clip rejection threshold (default: 3.0)")
 
+    p.add_argument("--object-name", default="", metavar="NAME",
+                   help="the target's name, shown on the web page")
     p.add_argument("--no-narrowband", action="store_true",
                    help="ignore narrowband (H / O / S) subs: skip them on arrival "
                         "so the stack is RGB (+L) only")
@@ -99,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = StackConfig(
         narrowband_enabled=not args.no_narrowband,
+        object_name=args.object_name.strip()[:120],
         background_enabled=not args.no_background,
         auto_white_balance=not args.no_auto_wb,
         background_box=args.background_box,

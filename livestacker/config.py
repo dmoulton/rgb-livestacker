@@ -91,6 +91,8 @@ class StackConfig:
     # Stack narrowband (H / O / S) subs along with the broadband ones. Off: they
     # are skipped on arrival, so a mixed capture folder gives a plain RGB(+L) stack.
     narrowband_enabled: bool = True
+    # Free-text name of what is being imaged, shown on the web page.
+    object_name: str = ""
 
 
 @dataclass

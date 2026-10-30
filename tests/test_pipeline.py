@@ -133,3 +133,12 @@ def test_narrowband_can_be_switched_off_on_the_server():
         assert r.ok is expect_stacked
         assert r.skipped is (not expect_stacked)
         assert ("H" in p.status()["channels"]) is expect_stacked
+
+
+def test_object_name_reaches_the_status_and_the_command_line():
+    from livestacker.__main__ import build_parser
+    args = build_parser().parse_args(["--watch", "x", "--object-name", "IC 434 <b>"])
+    assert args.object_name == "IC 434 <b>"
+    p = Pipeline(StackConfig(object_name="IC 434"))
+    assert p.status()["object"] == "IC 434"
+    assert Pipeline(StackConfig()).status()["object"] == ""

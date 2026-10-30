@@ -25,6 +25,7 @@ SETTINGS = Path(__file__).resolve().parent.parent / "launcher-settings.json"
 DEFAULTS = {
     "mode": "watch",
     "folder": "",
+    "object_name": "",
     "interval": 2.0,
     "catch_up": True,
     "bias": "",
@@ -87,6 +88,12 @@ class Launcher:
         ttk.Label(frm, text="Folder").grid(row=r, column=0, sticky="w", **pad)
         ttk.Entry(frm, textvariable=self.v["folder"]).grid(row=r, column=1, sticky="ew", **pad)
         ttk.Button(frm, text="Browse…", command=lambda: self._pick_dir("folder")).grid(
+            row=r, column=2, sticky="w", **pad); r += 1
+
+        ttk.Label(frm, text="Object name").grid(row=r, column=0, sticky="w", **pad)
+        ttk.Entry(frm, textvariable=self.v["object_name"]).grid(
+            row=r, column=1, sticky="ew", **pad)
+        ttk.Label(frm, text="shown on the web page", foreground="#888").grid(
             row=r, column=2, sticky="w", **pad); r += 1
 
         self.interval_row = ttk.Frame(frm)
@@ -234,6 +241,9 @@ class Launcher:
             cmd += ["--interval", self.v["interval"].get()]
         elif not self.v["catch_up"].get():
             cmd.append("--no-catch-up")
+        name = self.v["object_name"].get().strip()
+        if name:
+            cmd += ["--object-name", name]
         for key, flag in (("bias", "--bias"), ("dark", "--dark"), ("flat", "--flat")):
             val = self.v[key].get().strip()
             if val:

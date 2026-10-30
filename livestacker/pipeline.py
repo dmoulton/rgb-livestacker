@@ -257,6 +257,7 @@ class Pipeline:
         flats = sorted(cal.flats) if cal and cal.flats else []
         return {
             "type": "status",
+            "object": self.cfg.object_name,
             "reference": self.reference_path,
             "reference_filter": self.reference_filter,
             "calibration": {

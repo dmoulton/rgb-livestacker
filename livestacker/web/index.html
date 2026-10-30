@@ -59,6 +59,10 @@
     border-radius: 6px; color: var(--text); backdrop-filter: blur(4px);
   }
   h1 { font-size: 15px; margin: 0 0 4px; letter-spacing: .3px; }
+  #object {
+    font-size: 20px; font-weight: 600; color: var(--accent);
+    margin: 0 0 6px; overflow-wrap: anywhere;
+  }
   .sub { color: var(--dim); font-size: 12px; margin-bottom: 18px; overflow-wrap: anywhere; }
   h2 {
     font-size: 11px; text-transform: uppercase; letter-spacing: .8px;
@@ -102,6 +106,7 @@
   </div>
 
   <aside>
+    <div id="object" hidden></div>
     <h1>RGB Livestacker</h1>
     <div class="sub" id="ref">no reference yet</div>
 
@@ -269,6 +274,11 @@ function renderStatus(s) {
   $("total").textContent = s.total_frames;
   $("rejected").textContent = s.rejected;
   $("elapsed").textContent = `${s.elapsed} s`;
+  // set as text, never markup: this string comes from the server's command line
+  const object = s.object || "";
+  $("object").textContent = object;
+  $("object").hidden = !object;
+  document.title = object ? `${object} — RGB Livestacker` : "RGB Livestacker";
   $("lum-ctl").hidden = !s.luminance;
   $("ha-ctl").hidden = !s.ha;
   if (s.calibration) {
