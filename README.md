@@ -58,6 +58,19 @@ cursor, `+` / `-` zoom, `1` is 100%, `0` is Fit, and double-click toggles
 between them. The browser is sent the full-resolution image automatically once
 you zoom past what the downscaled preview can show.
 
+**Password (optional).** Type one into the launcher's *Password* box (not saved;
+it is asked for again at each launch). With a password set, a browser sees a
+login page first, and the page, the PNG download and the live connection all
+need to be signed in (the login lasts 30 days in that browser, or until the
+stacker restarts). Any password is accepted, with no length or content rules.
+Five wrong guesses in a row lock logins out for 30 seconds. From the command
+line, set the `LIVESTACK_PASSWORD` environment variable instead (a flag would
+show in process listings). With no password, nothing is asked. The password
+travels as plain text over `http://`, so on a LAN anyone watching the network
+can read it; over an `https://` tunnel (localhost.run) it is encrypted. With a
+password set, the raw websocket port is bound to this machine only; browsers
+reach it through the web port.
+
 Several browsers can connect at once. The stack is shared, but the display
 settings (stretch, gamma, green-noise, luminance, zoom, panel) are **per
 browser**: each is remembered in that browser, and the server renders each one

@@ -23,13 +23,17 @@ stacked.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import http.server
 import json
 import logging
 import queue
+import secrets
 import socket
 import threading
 import time
+from http.cookies import SimpleCookie
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -44,6 +48,10 @@ log = logging.getLogger("livestacker.server")
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
 STALLED_BYTES = 32 * 1024 * 1024      # unsent data after which a browser is skipped
+SESSION_COOKIE = "ls_session"
+SESSION_DAYS = 30
+LOGIN_MAX_FAILS = 5                   # wrong passwords in a row before a lockout
+LOGIN_LOCKOUT_S = 30
 
 
 def params_from_query(query: str) -> StretchParams:
@@ -96,8 +104,13 @@ def _params_key(p: StretchParams) -> tuple:
 
 class LiveStacker:
     def __init__(self, cfg: StackConfig, host: str, ws_port: int, web_port: int,
-                 calibrator: Calibrator | None = None):
+                 calibrator: Calibrator | None = None, password: str = ""):
         self.cfg = cfg
+        self.password = password          # "" = no password, open to anyone
+        self._sessions: dict[str, float] = {}      # login cookie -> expiry time
+        self._login_fails = 0
+        self._locked_until = 0.0
+        self._auth_lock = threading.Lock()
         self.host = host
         self.ws_port = ws_port
         self.web_port = web_port
@@ -119,6 +132,50 @@ class LiveStacker:
         self._worker = threading.Thread(target=self._worker_loop, daemon=True)
         self._renderer = threading.Thread(target=self._render_loop, daemon=True)
         self._stop = threading.Event()
+
+    # -- password protection ------------------------------------------------
+
+    def _ws_host(self) -> str:
+        """Where the websocket server listens. With a password it is local only:
+        the only way in from outside is the web port's /ws relay, which checks
+        the login cookie — otherwise the raw port would bypass the password."""
+        if self.password:
+            return "127.0.0.1"
+        return self.host
+
+    def check_login(self, candidate: str) -> str:
+        """'ok', 'bad' or 'locked' (too many wrong guesses in a row)."""
+        with self._auth_lock:
+            if time.time() < self._locked_until:
+                return "locked"
+            # compare digests so the check takes the same time wherever it differs
+            same = hmac.compare_digest(
+                hashlib.sha256(candidate.encode()).digest(),
+                hashlib.sha256(self.password.encode()).digest())
+            if same:
+                self._login_fails = 0
+                return "ok"
+            self._login_fails += 1
+            if self._login_fails >= LOGIN_MAX_FAILS:
+                self._login_fails = 0
+                self._locked_until = time.time() + LOGIN_LOCKOUT_S
+            return "bad"
+
+    def new_session(self) -> str:
+        token = secrets.token_urlsafe(32)
+        now = time.time()
+        with self._auth_lock:
+            self._sessions = {t: e for t, e in self._sessions.items() if e > now}
+            self._sessions[token] = now + SESSION_DAYS * 86400
+        return token
+
+    def valid_session(self, token: str | None) -> bool:
+        if not self.password:
+            return True
+        if not token:
+            return False
+        with self._auth_lock:
+            return self._sessions.get(token, 0.0) > time.time()
 
     # -- public API used by the frame source --------------------------------
 
@@ -313,8 +370,9 @@ class LiveStacker:
                 if "websocket" not in self.headers.get("Upgrade", "").lower():
                     self.send_error(426, "websocket upgrade required")
                     return
-                target = stacker.host if stacker.host not in ("", "0.0.0.0", "::") \
-                    else "127.0.0.1"
+                target = stacker._ws_host()
+                if target in ("", "0.0.0.0", "::"):
+                    target = "127.0.0.1"
                 try:
                     up = socket.create_connection((target, stacker.ws_port), timeout=5)
                 except OSError:
@@ -326,8 +384,83 @@ class LiveStacker:
                 up.sendall(head.encode("latin-1"))
                 _pipe(self.connection, up)
 
+            # -- password gate ---------------------------------------------
+
+            def _authorized(self) -> bool:
+                if not stacker.password:
+                    return True
+                try:
+                    jar = SimpleCookie(self.headers.get("Cookie", ""))
+                except Exception:
+                    return False
+                morsel = jar.get(SESSION_COOKIE)
+                return stacker.valid_session(morsel.value if morsel else None)
+
+            def _send_login(self, status: int = 200, message: str = ""):
+                body = (WEB_ROOT / "login.html").read_text(encoding="utf-8").replace(
+                    "{{MESSAGE}}", f'<div class="err">{message}</div>' if message else "")
+                data = body.encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_POST(self):
+                if not stacker.password or self.path.split("?")[0] != "/login":
+                    self.send_error(404)
+                    return
+                try:
+                    n = min(int(self.headers.get("Content-Length", "0")), 4096)
+                except ValueError:
+                    n = 0
+                form = parse_qs(self.rfile.read(n).decode("utf-8", "replace"),
+                                keep_blank_values=True)
+                result = stacker.check_login(form.get("password", [""])[-1])
+                if result == "ok":
+                    token = stacker.new_session()
+                    cookie = (f"{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; "
+                              f"Path=/; Max-Age={SESSION_DAYS * 86400}")
+                    if self.headers.get("X-Forwarded-Proto", "").lower() == "https":
+                        cookie += "; Secure"     # (behind an https tunnel)
+                    self.send_response(303)
+                    self.send_header("Location", "/")
+                    self.send_header("Set-Cookie", cookie)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                elif result == "locked":
+                    self._send_login(429, "Too many attempts. Wait a little and try again.")
+                else:
+                    self._send_login(401, "Incorrect password.")
+
+            def do_HEAD(self):
+                if not self._authorized():
+                    self.send_error(401)
+                    return
+                super().do_HEAD()
+
             def do_GET(self):
-                if self.path.split("?")[0] == "/ws":
+                path = self.path.split("?")[0]
+                if not self._authorized():
+                    if path in ("/", "/index.html", "/login"):
+                        self._send_login()
+                    elif path == "/ws":
+                        # a websocket client wants a plain HTTP/1.1 refusal
+                        self.close_connection = True
+                        self.wfile.write(b"HTTP/1.1 401 Unauthorized\r\n"
+                                         b"Content-Length: 0\r\n"
+                                         b"Connection: close\r\n\r\n")
+                    else:
+                        self.send_error(401)
+                    return
+                if path == "/login":                  # already signed in
+                    self.send_response(303)
+                    self.send_header("Location", "/")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                if path == "/ws":
                     self._relay_websocket()
                     return
                 if self.path.startswith("/snapshot"):
@@ -375,7 +508,7 @@ class LiveStacker:
         threading.Thread(target=self._serve_http, daemon=True).start()
 
         # the page only ever sends small JSON settings messages
-        async with websockets.serve(self._ws_handler, self.host, self.ws_port,
+        async with websockets.serve(self._ws_handler, self._ws_host(), self.ws_port,
                                     max_size=64 * 1024):
             log.info("websocket on ws://%s:%d", self.host or "localhost",
                      self.ws_port)

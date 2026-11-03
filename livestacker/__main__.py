@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 
 from .calibration import Calibrator, MasterBias, MasterDark, build_flats
@@ -140,7 +141,13 @@ def main(argv: list[str] | None = None) -> int:
 
     calibrator = Calibrator(cfg, master_dark, flats, master_bias)
 
-    stacker = LiveStacker(cfg, args.host, args.ws_port, args.web_port, calibrator)
+    # The password comes from the environment, not a flag, so it never shows up
+    # in a process listing or the launcher's command echo.
+    password = os.environ.get("LIVESTACK_PASSWORD", "")
+    stacker = LiveStacker(cfg, args.host, args.ws_port, args.web_port, calibrator,
+                          password=password)
+    if password:
+        logging.getLogger("livestacker").info("password protection is ON")
 
     if args.watch:
         source = WatchSource(args.watch, stacker.submit_file,

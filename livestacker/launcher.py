@@ -10,6 +10,7 @@ Opened by running the module with no arguments (`python -m livestacker`).
 from __future__ import annotations
 
 import json
+import os
 import queue
 import subprocess
 import sys
@@ -58,6 +59,9 @@ class Launcher:
 
         self.proc: subprocess.Popen | None = None
         self.log_q: "queue.Queue[str]" = queue.Queue()
+        # not in self.v: that is what gets saved to disk, and a password should
+        # not be written there — it is asked for again at each launch
+        self.password = tk.StringVar()
         self.v = {k: tk.StringVar(value=str(v)) if not isinstance(v, bool)
                   else tk.BooleanVar(value=v) for k, v in DEFAULTS.items()}
         self._load()
@@ -164,6 +168,14 @@ class Launcher:
                            ("background", "Background removal"), ("auto_wb", "Auto white balance"),
                            ("narrowband", "Narrowband")):
             ttk.Checkbutton(opts, text=label, variable=self.v[key]).pack(side="left", padx=(0, 12))
+
+        pw = ttk.Frame(frm)
+        pw.grid(row=r, column=0, columnspan=3, sticky="ew", **pad); r += 1
+        ttk.Label(pw, text="Password").pack(side="left")
+        ttk.Entry(pw, textvariable=self.password, show="•", width=24).pack(
+            side="left", padx=8)
+        ttk.Label(pw, text="optional: browsers must enter it. Not saved.",
+                  foreground="#888").pack(side="left")
 
         net = ttk.Frame(frm)
         net.grid(row=r, column=0, columnspan=3, sticky="w", **pad); r += 1
@@ -317,10 +329,15 @@ class Launcher:
         flags = 0
         if sys.platform == "win32":
             flags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+        # handed over in the environment, so it never appears in the command line
+        env = os.environ.copy()
+        env.pop("LIVESTACK_PASSWORD", None)
+        if self.password.get():
+            env["LIVESTACK_PASSWORD"] = self.password.get()
         try:
             self.proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1, creationflags=flags,
+                text=True, bufsize=1, creationflags=flags, env=env,
                 cwd=str(Path(__file__).resolve().parent.parent),
             )
         except OSError as exc:
