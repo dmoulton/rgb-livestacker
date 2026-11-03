@@ -11,10 +11,11 @@ from urllib.parse import urlencode
 
 import numpy as np
 import pytest
-from websockets.exceptions import InvalidStatus
+from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect
 
 from livestacker.config import StackConfig
+import livestacker.server as server_mod
 from livestacker.server import LOGIN_MAX_FAILS, LiveStacker
 from tests.test_server_clients import _free_port, _star_frame
 
@@ -39,9 +40,9 @@ def _server(password):
     return stacker, web_port
 
 
-def _http(port, method, path, body=None, cookie=None):
+def _http(port, method, path, body=None, cookie=None, headers=None):
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-    headers = {}
+    headers = dict(headers or {})
     if cookie:
         headers["Cookie"] = cookie
     if body is not None:
@@ -54,8 +55,9 @@ def _http(port, method, path, body=None, cookie=None):
     return out
 
 
-def _login(port, password):
-    return _http(port, "POST", "/login", urlencode({"password": password}))
+def _login(port, password, headers=None):
+    return _http(port, "POST", "/login", urlencode({"password": password}),
+                 headers=headers)
 
 
 def test_no_password_means_no_prompt():
@@ -125,3 +127,141 @@ def test_the_raw_websocket_port_is_local_only_when_a_password_is_set():
     locked = LiveStacker(CFG, "0.0.0.0", 1, 2, password="x")
     assert open_._ws_host() == "0.0.0.0"
     assert locked._ws_host() == "127.0.0.1"
+
+
+# -- hardening ---------------------------------------------------------------
+
+def test_security_headers_nonce_and_nothing_else_is_served():
+    _, web = _server("")
+    status, headers, body = _http(web, "GET", "/")
+    assert status == 200
+    h = {k.lower(): v for k, v in headers.items()}
+    assert h["x-content-type-options"] == "nosniff"
+    assert h["x-frame-options"] == "DENY" and h["referrer-policy"] == "no-referrer"
+    assert h["server"] == "WebStacker"                         # no Python version
+    csp = h["content-security-policy"]
+    assert "frame-ancestors 'none'" in csp and "unsafe-inline" not in csp
+    nonce = csp.split("script-src 'nonce-")[1].split("'")[0]
+    assert f'<script nonce="{nonce}">'.encode() in body       # inline script allowed by nonce only
+    assert f'<style nonce="{nonce}">'.encode() in body
+    for path in ("/login.html", "/index.html.bak", "/livestacker/", "/server.py"):
+        assert _http(web, "GET", path)[0] == 404              # no static fallback
+
+
+def test_login_cookie_is_secure_behind_https_and_on_tunnel_hosts():
+    _, web = _server("pw")
+    plain = _login(web, "pw")[1]["Set-Cookie"]
+    assert "Secure" not in plain and "Max-Age=604800" in plain          # 7 days
+    via_proxy = _login(web, "pw", {"X-Forwarded-Proto": "https"})[1]["Set-Cookie"]
+    assert "Secure" in via_proxy
+    on_tunnel = _login(web, "pw", {"Host": "abc123.lhr.life"})[1]["Set-Cookie"]
+    assert "Secure" in on_tunnel                                         # even with no proxy header
+
+
+def test_sign_out_ends_the_login_and_cuts_its_live_connection():
+    _, web = _server("pw")
+    cookie = _login(web, "pw")[1]["Set-Cookie"].split(";")[0]
+    with connect(f"ws://127.0.0.1:{web}/ws", max_size=None,
+                 additional_headers={"Cookie": cookie}) as c:
+        c.recv(timeout=5)                                              # live
+        status, headers, _ = _http(web, "POST", "/logout", "", cookie=cookie)
+        assert status == 204 and "Max-Age=0" in headers["Set-Cookie"]
+        with pytest.raises(ConnectionClosed):
+            for _ in range(20):
+                c.recv(timeout=5)
+    assert _http(web, "GET", "/snapshot.png", cookie=cookie)[0] == 401  # cookie is dead
+    assert _http(web, "POST", "/logout", "", cookie="ls_session=junk")[0] == 204  # harmless
+
+
+def test_lockouts_get_longer_each_time():
+    stacker, _ = _server("pw")
+    lengths = []
+    for _ in range(4):
+        for _ in range(LOGIN_MAX_FAILS):
+            stacker.check_login("nope")
+        lengths.append(round(stacker._locked_until - time.time()))
+        stacker._locked_until = 0.0                                    # skip the wait
+    assert lengths == [30, 60, 120, 240]
+    assert stacker.check_login("pw") == "ok"
+    for _ in range(LOGIN_MAX_FAILS):
+        stacker.check_login("nope")
+    assert round(stacker._locked_until - time.time()) == 30           # a good login resets it
+
+
+def test_browser_is_sent_file_names_not_paths():
+    from types import SimpleNamespace as NS
+    from livestacker.pipeline import Pipeline, _public_name
+    assert _public_name("/Users/dave/astro/darks (12 frames)") == "darks (12 frames)"
+    assert _public_name("C:\\Users\\dave\\bias.fits") == "bias.fits"
+    assert _public_name("/a/b/c/") == "c"
+    cal = NS(master_bias=NS(source="/Users/dave/x/bias (6 frames)"),
+             master_dark=NS(source="C:\\Users\\dave\\dark (9 frames)"), flats={})
+    p = Pipeline(CFG, calibrator=cal)
+    st = p.status()["calibration"]
+    assert st["bias"] == "bias (6 frames)" and st["dark"] == "dark (9 frames)"
+    assert "dave" not in json.dumps(p.status())
+
+
+def test_idle_connections_are_dropped(monkeypatch):
+    monkeypatch.setattr(server_mod, "HTTP_TIMEOUT_S", 1)
+    _, web = _server("")
+    s = socket.create_connection(("127.0.0.1", web))
+    s.settimeout(6)
+    t = time.time()
+    assert s.recv(10) == b""                                          # server hung up
+    assert time.time() - t < 5
+    s.close()
+
+
+def test_connections_are_capped(monkeypatch):
+    monkeypatch.setattr(server_mod, "MAX_HTTP_CONNECTIONS", 3)
+    _, web = _server("")
+    idle = [socket.create_connection(("127.0.0.1", web)) for _ in range(3)]
+    try:
+        time.sleep(0.5)
+        status, headers, _ = _http(web, "GET", "/")
+        assert status == 503 and headers.get("Retry-After") == "5"
+    finally:
+        for s in idle:
+            s.close()
+    time.sleep(0.5)
+    assert _http(web, "GET", "/")[0] == 200                           # recovers
+
+
+def test_live_browsers_are_capped(monkeypatch):
+    monkeypatch.setattr(server_mod, "MAX_VIEWERS", 2)
+    stacker, web = _server("")
+    url = f"ws://127.0.0.1:{stacker.ws_port}"
+    with connect(url, max_size=None) as a, connect(url, max_size=None) as b:
+        a.recv(timeout=5), b.recv(timeout=5)
+        with connect(url, max_size=None) as c:
+            with pytest.raises(ConnectionClosed) as err:
+                for _ in range(5):
+                    c.recv(timeout=5)
+            assert err.value.rcvd.code == 1013                        # "try again later"
+    with connect(url, max_size=None) as d:                            # a seat is free again
+        assert d.recv(timeout=5)
+
+
+def test_only_a_couple_of_full_size_pngs_at_once(monkeypatch):
+    monkeypatch.setattr(server_mod, "SNAPSHOTS_AT_ONCE", 1)
+    stacker, web = _server("")
+    release, entered = threading.Event(), threading.Event()
+    real = stacker.pipeline.snapshot_png
+
+    def slow(params):
+        entered.set()
+        release.wait(10)
+        return real(params)
+    stacker.pipeline.snapshot_png = slow
+    first = threading.Thread(target=lambda: _http(web, "GET", "/snapshot.png"))
+    first.start()
+    try:
+        assert entered.wait(5)
+        status, headers, _ = _http(web, "GET", "/snapshot.png")
+        assert status == 503 and headers.get("Retry-After") == "5"
+    finally:
+        release.set()
+        first.join(10)
+    stacker.pipeline.snapshot_png = real
+    assert _http(web, "GET", "/snapshot.png")[0] == 200

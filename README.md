@@ -60,16 +60,29 @@ you zoom past what the downscaled preview can show.
 
 **Password (optional).** Type one into the launcher's *Password* box (not saved;
 it is asked for again at each launch). With a password set, a browser sees a
-login page first (with a Show/Hide button for what it types), and the page, the PNG download and the live connection all
-need to be signed in (the login lasts 30 days in that browser, or until the
-stacker restarts). Any password is accepted, with no length or content rules.
-Five wrong guesses in a row lock logins out for 30 seconds. From the command
-line, set the `LIVESTACK_PASSWORD` environment variable instead (a flag would
-show in process listings). With no password, nothing is asked. The password
-travels as plain text over `http://`, so on a LAN anyone watching the network
-can read it; over an `https://` tunnel (localhost.run) it is encrypted. With a
-password set, the raw websocket port is bound to this machine only; browsers
-reach it through the web port.
+login page first (with a Show/Hide button for what it types), and the page, the
+PNG download and the live connection all need it. A login lasts 7 days in that
+browser, or until you press **Sign out** (which also cuts that login's live
+connection) or restart the stacker. Any password is accepted, with no length or
+content rules, but guessing is throttled: five wrong tries in a row lock logins
+out for 30 seconds, then 1 minute, 2, 4 ... up to an hour (a correct login resets
+it; restarting the stacker clears a lockout). From the command line, set the
+`LIVESTACK_PASSWORD` environment variable instead (a flag would show in process
+listings). With no password, nothing is asked.
+
+Over plain `http://` the password travels as text, so on a LAN anyone watching
+the network can read it; over an `https://` tunnel (localhost.run) it is
+encrypted, and the login cookie is marked Secure there. Use the https address
+only. With a password set, the raw websocket port is bound to this machine only;
+browsers reach it through the web port. The tunnel service terminates the
+encryption on its own servers, so it can in principle see what passes through.
+
+Other protections, on whether or not a password is set: connections that go quiet
+for 10 seconds are dropped; at most 64 web connections, 16 live browsers and 2
+full-size PNG downloads are served at once (extra ones are turned away and can
+retry); only the stacker's own page is served (no file browsing); responses carry
+a strict content-security policy and the usual anti-framing / no-sniff headers;
+and the browser is sent file names, never your folder paths.
 
 Several browsers can connect at once. The stack is shared, but the display
 settings (stretch, gamma, green-noise, luminance, zoom, panel) are **per

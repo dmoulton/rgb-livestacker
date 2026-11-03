@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -32,6 +33,15 @@ log = logging.getLogger("livestacker.pipeline")
 aa.MIN_MATCHES_FRACTION = 0.6
 aa.PIXEL_TOL = 2
 MAX_CONTROL_POINTS = 50        # stars (brightest first) used to find the transform
+
+
+def _public_name(label: str) -> str:
+    """A calibration source label ("/home/me/darks (12 frames)") reduced to the last
+    folder / file name ("darks (12 frames)"): what the browser is shown shouldn't
+    carry the machine's directory layout or user name."""
+    m = re.match(r"^(.*?)( \(\d+ frames\))?$", label)
+    base = re.split(r"[\\/]", m.group(1).rstrip("\\/"))[-1]
+    return base + (m.group(2) or "")
 
 
 def detect_stars(data: np.ndarray, detection_sigma: float = 5.0) -> np.ndarray:
@@ -256,8 +266,8 @@ class Pipeline:
         }
         total = sum(st.frames for st in self.channels.values())
         cal = self.calibrator
-        bias = cal.master_bias.source if cal and cal.master_bias else None
-        dark = cal.master_dark.source if cal and cal.master_dark else None
+        bias = _public_name(cal.master_bias.source) if cal and cal.master_bias else None
+        dark = _public_name(cal.master_dark.source) if cal and cal.master_dark else None
         flats = sorted(cal.flats) if cal and cal.flats else []
         return {
             "type": "status",

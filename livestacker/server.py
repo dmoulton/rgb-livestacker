@@ -29,6 +29,7 @@ import http.server
 import json
 import logging
 import queue
+import re
 import secrets
 import socket
 import sys
@@ -50,9 +51,16 @@ log = logging.getLogger("livestacker.server")
 WEB_ROOT = Path(__file__).resolve().parent / "web"
 STALLED_BYTES = 32 * 1024 * 1024      # unsent data after which a browser is skipped
 SESSION_COOKIE = "ls_session"
-SESSION_DAYS = 30
+SESSION_DAYS = 7
 LOGIN_MAX_FAILS = 5                   # wrong passwords in a row before a lockout
-LOGIN_LOCKOUT_S = 30
+LOGIN_LOCKOUT_S = 30                  # first lockout; each further one doubles it...
+LOGIN_LOCKOUT_MAX_S = 3600            # ...up to this
+# tunnel hosts that are https-only: a login cookie for them is always marked Secure
+HTTPS_ONLY_SUFFIXES = (".lhr.life", ".localhost.run")
+HTTP_TIMEOUT_S = 10                   # drop a connection that sends nothing for this long
+MAX_HTTP_CONNECTIONS = 64             # simultaneous web connections (live ones included)
+MAX_VIEWERS = 16                      # simultaneous live browsers
+SNAPSHOTS_AT_ONCE = 2                 # full-size PNG renders / downloads at a time
 
 
 def params_from_query(query: str) -> StretchParams:
@@ -80,6 +88,29 @@ class _WebServer(http.server.ThreadingHTTPServer):
     is taken, with no error, so ask for exclusive use there instead."""
 
     allow_reuse_address = sys.platform != "win32"
+
+    def __init__(self, *args, **kwargs):
+        self._slots = threading.BoundedSemaphore(MAX_HTTP_CONNECTIONS)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        # one thread per connection, so cap them: past the limit, turn people away
+        # rather than let idle or hostile connections pile up without bound
+        if not self._slots.acquire(blocking=False):
+            try:
+                request.sendall(b"HTTP/1.0 503 Service Unavailable\r\n"
+                                b"Retry-After: 5\r\nContent-Length: 0\r\n\r\n")
+            except OSError:
+                pass
+            self.shutdown_request(request)
+            return
+        super().process_request(request, client_address)
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
 
     def server_bind(self) -> None:
         if sys.platform == "win32":
@@ -125,7 +156,10 @@ class LiveStacker:
         self.password = password          # "" = no password, open to anyone
         self._sessions: dict[str, float] = {}      # login cookie -> expiry time
         self._login_fails = 0
+        self._lockouts = 0                # consecutive lockouts (each lasts longer)
         self._locked_until = 0.0
+        self._relays: dict[str, set] = {}          # login cookie -> its live sockets
+        self._snapshots = threading.BoundedSemaphore(SNAPSHOTS_AT_ONCE)
         self._auth_lock = threading.Lock()
         self.host = host
         self.ws_port = ws_port
@@ -169,12 +203,16 @@ class LiveStacker:
                 hashlib.sha256(candidate.encode()).digest(),
                 hashlib.sha256(self.password.encode()).digest())
             if same:
-                self._login_fails = 0
+                self._login_fails = self._lockouts = 0
                 return "ok"
             self._login_fails += 1
             if self._login_fails >= LOGIN_MAX_FAILS:
+                # lock out for longer each time, so a short password can't simply
+                # be ground through a few guesses at a time
                 self._login_fails = 0
-                self._locked_until = time.time() + LOGIN_LOCKOUT_S
+                self._lockouts += 1
+                self._locked_until = time.time() + min(
+                    LOGIN_LOCKOUT_S * 2 ** (self._lockouts - 1), LOGIN_LOCKOUT_MAX_S)
             return "bad"
 
     def new_session(self) -> str:
@@ -185,6 +223,28 @@ class LiveStacker:
             self._sessions[token] = now + SESSION_DAYS * 86400
         return token
 
+    def end_session(self, token: str | None) -> None:
+        """Sign out: forget the login and cut its live connections."""
+        if not token:
+            return
+        with self._auth_lock:
+            self._sessions.pop(token, None)
+            socks = self._relays.pop(token, set())
+        for s in socks:
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def track_relay(self, token: str, socks: tuple) -> None:
+        with self._auth_lock:
+            self._relays.setdefault(token, set()).update(socks)
+
+    def untrack_relay(self, token: str, socks: tuple) -> None:
+        with self._auth_lock:
+            if token in self._relays:
+                self._relays[token].difference_update(socks)
+
     def valid_session(self, token: str | None) -> bool:
         if not self.password:
             return True
@@ -192,6 +252,9 @@ class LiveStacker:
             return False
         with self._auth_lock:
             return self._sessions.get(token, 0.0) > time.time()
+
+    def _status_json(self) -> str:
+        return json.dumps({**self.pipeline.status(), "auth": bool(self.password)})
 
     # -- public API used by the frame source --------------------------------
 
@@ -311,7 +374,7 @@ class LiveStacker:
 
     def _broadcast_status(self) -> None:
         self._threadsafe(self._broadcast_text,
-                         json.dumps(self.pipeline.status()))
+                         self._status_json())
 
     def _threadsafe(self, fn, *args) -> None:
         if self._loop is not None:
@@ -338,12 +401,17 @@ class LiveStacker:
 
     async def _ws_handler(self, ws) -> None:
         with self._clients_lock:
-            self._clients[ws] = StretchParams()      # replaced by the page's own
+            full = len(self._clients) >= MAX_VIEWERS
+            if not full:
+                self._clients[ws] = StretchParams()  # replaced by the page's own
             total = len(self._clients)
+        if full:
+            await ws.close(1013, "too many viewers")  # 1013: try again later
+            return
         peer = getattr(ws, "remote_address", ("?",))[0]
         log.info("client connected (%s), %d total", peer, total)
         try:
-            await ws.send(json.dumps(self.pipeline.status()))
+            await ws.send(self._status_json())
             self._mark_dirty(ws)                     # show something right away
 
             async for message in ws:
@@ -371,12 +439,89 @@ class LiveStacker:
     def _make_http_handler(self):
         stacker = self
 
-        class Handler(http.server.SimpleHTTPRequestHandler):
-            def __init__(self, *a, **kw):
-                super().__init__(*a, directory=str(WEB_ROOT), **kw)
+        class Handler(http.server.BaseHTTPRequestHandler):
+            server_version = "WebStacker"      # (not the Python / stdlib version)
+            sys_version = ""
+            timeout = HTTP_TIMEOUT_S           # a connection that goes quiet is dropped
+            _csp = "default-src 'none'; frame-ancestors 'none'"
 
             def log_message(self, *a):  # keep stdlib server quiet
                 pass
+
+            def version_string(self) -> str:
+                return self.server_version
+
+            def end_headers(self):
+                self.send_header("Content-Security-Policy", self._csp)
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("X-Frame-Options", "DENY")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+                super().end_headers()
+
+            # -- helpers ---------------------------------------------------
+
+            def _https(self) -> bool:
+                """Did the browser reach us over https (through a tunnel / proxy)?"""
+                h = self.headers
+                proto = h.get("X-Forwarded-Proto", "").split(",")[0].strip().lower()
+                host = h.get("Host", "").split(":")[0].lower()
+                return (proto == "https" or "proto=https" in h.get("Forwarded", "").lower()
+                        or h.get("X-Forwarded-Ssl", "").lower() == "on"
+                        or host.endswith(HTTPS_ONLY_SUFFIXES))
+
+            def _cookie(self, value: str, max_age: int) -> str:
+                c = (f"{SESSION_COOKIE}={value}; HttpOnly; SameSite=Strict; "
+                     f"Path=/; Max-Age={max_age}")
+                return c + "; Secure" if self._https() else c
+
+            def _session_token(self) -> str | None:
+                try:
+                    jar = SimpleCookie(self.headers.get("Cookie", ""))
+                except Exception:
+                    return None
+                morsel = jar.get(SESSION_COOKIE)
+                return morsel.value if morsel else None
+
+            def _authorized(self) -> bool:
+                return stacker.valid_session(self._session_token())
+
+            def _page_csp(self, nonce: str) -> str:
+                host = self.headers.get("Host", "")
+                ws = (f" ws://{host} wss://{host}"
+                      if re.fullmatch(r"[A-Za-z0-9.\-]+(:\d+)?|\[[0-9a-fA-F:]+\](:\d+)?",
+                                      host) else "")
+                return (f"default-src 'none'; script-src 'nonce-{nonce}'; "
+                        f"style-src 'nonce-{nonce}'; img-src 'self' blob: data:; "
+                        f"connect-src 'self'{ws}; form-action 'self'; "
+                        "base-uri 'none'; frame-ancestors 'none'")
+
+            def _send_html(self, name: str, status: int = 200, **fill: str):
+                nonce = secrets.token_urlsafe(16)
+                html = (WEB_ROOT / name).read_text(encoding="utf-8")
+                for key, value in fill.items():
+                    html = html.replace("{{" + key + "}}", value)
+                html = (html.replace("<script>", f'<script nonce="{nonce}">')
+                            .replace("<style>", f'<style nonce="{nonce}">'))
+                data = html.encode()
+                self._csp = self._page_csp(nonce)
+                self.send_response(status)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+
+            def _send_login(self, status: int = 200, message: str = ""):
+                self._send_html("login.html", status, MESSAGE=(
+                    f'<div class="err">{message}</div>' if message else ""))
+
+            def _empty(self, status: int, **headers: str):
+                self.send_response(status)
+                for k, v in headers.items():
+                    self.send_header(k.replace("_", "-"), v)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
 
             def _relay_websocket(self):
                 """Pass a websocket upgrade on the web port through to the real
@@ -395,66 +540,53 @@ class LiveStacker:
                     self.send_error(502, "websocket server unavailable")
                     return
                 up.settimeout(None)
+                self.connection.settimeout(None)    # a live connection may sit idle
                 head = f"GET / HTTP/1.1\r\n" + "".join(
                     f"{k}: {v}\r\n" for k, v in self.headers.items()) + "\r\n"
                 up.sendall(head.encode("latin-1"))
-                _pipe(self.connection, up)
-
-            # -- password gate ---------------------------------------------
-
-            def _authorized(self) -> bool:
-                if not stacker.password:
-                    return True
+                token = self._session_token() if stacker.password else None
+                if token:
+                    stacker.track_relay(token, (self.connection, up))
                 try:
-                    jar = SimpleCookie(self.headers.get("Cookie", ""))
-                except Exception:
-                    return False
-                morsel = jar.get(SESSION_COOKIE)
-                return stacker.valid_session(morsel.value if morsel else None)
+                    _pipe(self.connection, up)
+                finally:
+                    if token:
+                        stacker.untrack_relay(token, (self.connection, up))
 
-            def _send_login(self, status: int = 200, message: str = ""):
-                body = (WEB_ROOT / "login.html").read_text(encoding="utf-8").replace(
-                    "{{MESSAGE}}", f'<div class="err">{message}</div>' if message else "")
-                data = body.encode()
-                self.send_response(status)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(data)))
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(data)
+            # -- requests --------------------------------------------------
 
             def do_POST(self):
-                if not stacker.password or self.path.split("?")[0] != "/login":
+                path = self.path.split("?")[0]
+                if not stacker.password or path not in ("/login", "/logout"):
                     self.send_error(404)
                     return
                 try:
                     n = min(int(self.headers.get("Content-Length", "0")), 4096)
                 except ValueError:
                     n = 0
-                form = parse_qs(self.rfile.read(n).decode("utf-8", "replace"),
-                                keep_blank_values=True)
+                body = self.rfile.read(n).decode("utf-8", "replace") if n > 0 else ""
+
+                if path == "/logout":
+                    stacker.end_session(self._session_token())
+                    self._empty(204, Set_Cookie=self._cookie("", 0))
+                    return
+
+                form = parse_qs(body, keep_blank_values=True)
                 result = stacker.check_login(form.get("password", [""])[-1])
                 if result == "ok":
                     token = stacker.new_session()
-                    cookie = (f"{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; "
-                              f"Path=/; Max-Age={SESSION_DAYS * 86400}")
-                    if self.headers.get("X-Forwarded-Proto", "").lower() == "https":
-                        cookie += "; Secure"     # (behind an https tunnel)
-                    self.send_response(303)
-                    self.send_header("Location", "/")
-                    self.send_header("Set-Cookie", cookie)
-                    self.send_header("Content-Length", "0")
-                    self.end_headers()
+                    self._empty(303, Location="/",
+                                Set_Cookie=self._cookie(token, SESSION_DAYS * 86400))
                 elif result == "locked":
-                    self._send_login(429, "Too many attempts. Wait a little and try again.")
+                    self._send_login(429, "Too many attempts. Try again later.")
                 else:
                     self._send_login(401, "Incorrect password.")
 
             def do_HEAD(self):
                 if not self._authorized():
                     self.send_error(401)
-                    return
-                super().do_HEAD()
+                else:
+                    self.send_error(405, "use GET")
 
             def do_GET(self):
                 path = self.path.split("?")[0]
@@ -471,41 +603,38 @@ class LiveStacker:
                         self.send_error(401)
                     return
                 if path == "/login":                  # already signed in
-                    self.send_response(303)
-                    self.send_header("Location", "/")
-                    self.send_header("Content-Length", "0")
-                    self.end_headers()
-                    return
-                if path == "/ws":
+                    self._empty(303, Location="/")
+                elif path == "/ws":
                     self._relay_websocket()
+                elif path.startswith("/snapshot"):
+                    self._snapshot()
+                elif path in ("/", "/index.html"):
+                    self._send_html("index.html")
+                else:
+                    self.send_error(404)              # nothing else is served
+
+            def _snapshot(self):
+                # a full-size PNG is expensive to make and to hold: only a couple
+                # at once, so a burst of requests can't use up the machine
+                if not stacker._snapshots.acquire(blocking=False):
+                    self._empty(503, Retry_After="5")
                     return
-                if self.path.startswith("/snapshot"):
+                try:
                     # the page puts its own display settings in the query string
                     png = stacker.pipeline.snapshot_png(
                         params_from_query(urlparse(self.path).query))
                     if png is None:
                         self.send_error(503, "no image yet")
                         return
+                    self.connection.settimeout(300)    # a big file over a slow link
                     self.send_response(200)
                     self.send_header("Content-Type", "image/png")
                     self.send_header("Content-Length", str(len(png)))
+                    self.send_header("Cache-Control", "no-store")
                     self.end_headers()
                     self.wfile.write(png)
-                    return
-                if self.path == "/" or self.path == "":
-                    self.path = "/index.html"
-                # inject the ws port so the page knows where to connect
-                if self.path == "/index.html":
-                    html = (WEB_ROOT / "index.html").read_text(encoding="utf-8")
-                    html = html.replace("{{WS_PORT}}", str(stacker.ws_port))
-                    body = html.encode()
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.send_header("Content-Length", str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body)
-                    return
-                super().do_GET()
+                finally:
+                    stacker._snapshots.release()
 
         return Handler
 

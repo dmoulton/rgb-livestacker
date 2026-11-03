@@ -66,6 +66,7 @@
     margin: 0 0 6px; overflow-wrap: anywhere;
   }
   .sub { color: var(--dim); font-size: 12px; margin: 18px 0 0; overflow-wrap: anywhere; }
+  #signout { margin-top: 14px; }
   h2 {
     font-size: 11px; text-transform: uppercase; letter-spacing: .8px;
     color: var(--dim); margin: 22px 0 10px; font-weight: 600;
@@ -171,6 +172,7 @@
     </table>
 
     <div class="sub" id="ref">no reference yet</div>
+    <button type="button" id="signout" hidden>Sign out</button>
   </aside>
 
 <script>
@@ -265,6 +267,10 @@ sliders.forEach((id) => $(id).addEventListener("input", () => {
   sendParams();
 }));
 $("auto").addEventListener("change", () => { reflectValues(); sendParams(); });
+$("signout").addEventListener("click", async () => {
+  try { await fetch("/logout", { method: "POST" }); } catch (_) {}
+  location.reload();                      // back to the login page
+});
 $("nb").addEventListener("change", () => { reflectValues(); sendParams(); });
 
 function renderStatus(s) {
@@ -283,6 +289,7 @@ function renderStatus(s) {
   $("object").textContent = object;
   $("object").hidden = !object;
   document.title = object ? `${object} — WebStacker` : "WebStacker";
+  $("signout").hidden = !s.auth;          // only when a password is set
   $("lum-ctl").hidden = !s.luminance;
   $("ha-ctl").hidden = !s.ha;
   if (s.calibration) {
