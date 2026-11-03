@@ -11,6 +11,7 @@ import asyncio
 import logging
 import os
 import sys
+import threading
 
 from .calibration import Calibrator, MasterBias, MasterDark, build_flats
 from .config import StackConfig
@@ -79,8 +80,26 @@ def build_parser() -> argparse.ArgumentParser:
                        help=f"trim N rows/columns off the {edge} of every raw "
                             "frame (a permanently bad sensor edge)")
 
+    # set by the launcher: exit when the launcher's pipe to us closes (it quit,
+    # crashed or was killed), so a stacker is never left running unattended
+    p.add_argument("--exit-with-launcher", action="store_true",
+                   help=argparse.SUPPRESS)
     p.add_argument("-v", "--verbose", action="store_true", help="chatty logging")
     return p
+
+
+def _exit_when_stdin_closes() -> None:
+    """Block until stdin hits end-of-file, then exit. The launcher keeps the write
+    end of our stdin open for as long as it lives; the OS closes it when the
+    launcher goes away however it goes (quit, crash, kill -9), which is what makes
+    this work where a signal handler or `atexit` would not."""
+    try:
+        while sys.stdin.read(1024):
+            pass
+    except Exception:
+        pass
+    logging.getLogger("livestacker").info("launcher is gone: stopping")
+    os._exit(0)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -155,6 +174,9 @@ def main(argv: list[str] | None = None) -> int:
     else:
         source = ReplaySource(args.replay, stacker.submit_file,
                               interval=args.interval, limit=args.limit)
+
+    if args.exit_with_launcher:
+        threading.Thread(target=_exit_when_stdin_closes, daemon=True).start()
 
     try:
         source.start()

@@ -9,6 +9,7 @@ Opened by running the module with no arguments (`python -m livestacker`).
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import queue
@@ -69,6 +70,10 @@ class Launcher:
         self._build()
         self.root.after(100, self._drain_log)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
+        if sys.platform == "darwin":
+            # Cmd-Q (and Quit in the app menu) skip the window-close handler
+            root.createcommand("tk::mac::Quit", self._on_close)
+        atexit.register(self._stop)       # any other normal exit
 
     # -- layout --------------------------------------------------------
 
@@ -281,7 +286,7 @@ class Launcher:
         if not folder or not Path(folder).is_dir():
             messagebox.showerror("Livestacker", "Pick a folder that exists.")
             return None
-        cmd = [sys.executable, "-m", "livestacker", "-v"]
+        cmd = [sys.executable, "-m", "livestacker", "--exit-with-launcher", "-v"]
         cmd += [f"--{self.v['mode'].get()}", folder]
         if self.v["mode"].get() == "replay":
             cmd += ["--interval", self.v["interval"].get()]
@@ -336,7 +341,9 @@ class Launcher:
             env["LIVESTACK_PASSWORD"] = self.password.get()
         try:
             self.proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                cmd, stdin=subprocess.PIPE,      # held open: its closing tells the
+                # server we are gone (see --exit-with-launcher)
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1, creationflags=flags, env=env,
                 cwd=str(Path(__file__).resolve().parent.parent),
             )

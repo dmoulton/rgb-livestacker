@@ -32,3 +32,30 @@ def test_no_catch_up_skips_existing(tmp_path):
     ws.stop()
 
     assert got == []
+
+
+def test_server_exits_when_the_launcher_pipe_closes(tmp_path):
+    """--exit-with-launcher: a stacker started by the launcher must not outlive
+    it. The OS closes the pipe whether the launcher quit, crashed or was killed."""
+    import socket
+    import subprocess
+    import sys
+    import time
+
+    def port():
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "livestacker", "--replay", str(tmp_path),
+         "--web-port", str(port()), "--ws-port", str(port()), "--exit-with-launcher"],
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        time.sleep(2.0)
+        assert proc.poll() is None, "should keep running while the launcher is alive"
+        proc.stdin.close()                       # what the OS does when the launcher dies
+        assert proc.wait(timeout=10) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
