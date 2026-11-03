@@ -226,3 +226,42 @@ def test_websocket_is_reachable_through_the_web_port():
         status = json.loads(c.recv(timeout=5))
         assert "channels" in status
         assert _settle(c) is not None             # and the image arrives
+
+
+def test_a_port_already_in_use_stops_the_stacker_with_a_clear_error(tmp_path):
+    import subprocess
+    import sys
+
+    cfg = StackConfig()
+    holder = socket.socket()
+    holder.bind(("127.0.0.1", 0))
+    holder.listen()
+    taken = holder.getsockname()[1]
+    try:
+        # in-process: the web port is taken
+        s = LiveStacker(cfg, "127.0.0.1", _free_port(), taken)
+        try:
+            s.bind()
+            raise AssertionError("bind should have failed")
+        except OSError as exc:
+            assert str(taken) in str(exc) and "already running" in str(exc)
+        # ...and the websocket port is taken (the web port claimed must be released)
+        web = _free_port()
+        s = LiveStacker(cfg, "127.0.0.1", taken, web)
+        try:
+            s.bind()
+            raise AssertionError("bind should have failed")
+        except OSError as exc:
+            assert "websocket port" in str(exc)
+        LiveStacker(cfg, "127.0.0.1", _free_port(), web).bind()   # web is free again
+
+        # the real command: exits with 2 and says why
+        out = subprocess.run(
+            [sys.executable, "-m", "livestacker", "--replay", str(tmp_path),
+             "--web-port", str(taken), "--ws-port", str(_free_port())],
+            capture_output=True, text=True, timeout=30)
+        assert out.returncode == 2
+        assert "already in use" in out.stderr or "not available" in out.stderr
+        assert "--web-port" in out.stderr
+    finally:
+        holder.close()

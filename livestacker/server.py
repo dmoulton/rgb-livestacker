@@ -31,6 +31,7 @@ import logging
 import queue
 import secrets
 import socket
+import sys
 import threading
 import time
 from http.cookies import SimpleCookie
@@ -73,6 +74,20 @@ def params_from_query(query: str) -> StretchParams:
     return StretchParams.from_json(data)
 
 
+class _WebServer(http.server.ThreadingHTTPServer):
+    """The stdlib server, except that a port already in use is always an error.
+    On Windows its default (SO_REUSEADDR) lets a second server bind a port that
+    is taken, with no error, so ask for exclusive use there instead."""
+
+    allow_reuse_address = sys.platform != "win32"
+
+    def server_bind(self) -> None:
+        if sys.platform == "win32":
+            self.socket.setsockopt(socket.SOL_SOCKET,
+                                   socket.SO_EXCLUSIVEADDRUSE, 1)  # type: ignore[attr-defined]
+        super().server_bind()
+
+
 def _pipe(a: socket.socket, b: socket.socket) -> None:
     """Copy bytes both ways between two sockets until either side closes."""
     def pump(src, dst):
@@ -106,6 +121,7 @@ class LiveStacker:
     def __init__(self, cfg: StackConfig, host: str, ws_port: int, web_port: int,
                  calibrator: Calibrator | None = None, password: str = ""):
         self.cfg = cfg
+        self._httpd = None
         self.password = password          # "" = no password, open to anyone
         self._sessions: dict[str, float] = {}      # login cookie -> expiry time
         self._login_fails = 0
@@ -493,15 +509,38 @@ class LiveStacker:
 
         return Handler
 
+    def bind(self) -> None:
+        """Claim the web and websocket ports now, so a port that is already in use
+        (another stacker, usually) stops us straight away with a clear message
+        instead of leaving a half-working server beside it. Raises OSError."""
+        if getattr(self, "_httpd", None) is not None:
+            return
+        try:
+            self._httpd = _WebServer((self.host, self.web_port),
+                                     self._make_http_handler())
+        except OSError as exc:
+            raise OSError(f"web port {self.web_port} is not available ({exc.strerror})"
+                          f" — is another stacker already running?") from exc
+        probe = socket.socket()
+        try:
+            probe.bind((self._ws_host(), self.ws_port))
+        except OSError as exc:
+            self._httpd.server_close()
+            self._httpd = None
+            raise OSError(f"websocket port {self.ws_port} is not available "
+                          f"({exc.strerror}) — is another stacker already running?"
+                          ) from exc
+        finally:
+            probe.close()
+
     def _serve_http(self) -> None:
-        handler = self._make_http_handler()
-        httpd = http.server.ThreadingHTTPServer((self.host, self.web_port), handler)
         log.info("web UI at http://%s:%d/", self.host or "localhost", self.web_port)
-        httpd.serve_forever()
+        self._httpd.serve_forever()
 
     # -- lifecycle -----------------------------------------------------
 
     async def run(self) -> None:
+        self.bind()           # (a no-op when main() already did)
         self._loop = asyncio.get_running_loop()
         self._worker.start()
         self._renderer.start()

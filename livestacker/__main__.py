@@ -168,6 +168,15 @@ def main(argv: list[str] | None = None) -> int:
     if password:
         logging.getLogger("livestacker").info("password protection is ON")
 
+    # claim the ports before anything starts: if they are taken (another stacker
+    # is running) say so and stop, rather than run half-working beside it
+    try:
+        stacker.bind()
+    except OSError as exc:
+        print(f"error: {exc}\nStop the other one, or pick different ports "
+              f"(--web-port / --ws-port).", file=sys.stderr)
+        return 2
+
     if args.watch:
         source = WatchSource(args.watch, stacker.submit_file,
                              catch_up=not args.no_catch_up)
