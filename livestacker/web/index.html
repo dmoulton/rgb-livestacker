@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RGB Livestacker</title>
+<title>WebStacker</title>
 <style>
   :root {
     --bg: #0b0d12; --panel: #151922; --line: #262c3a;
@@ -58,7 +58,9 @@
     background: rgba(12,15,20,.78); border: 1px solid var(--line);
     border-radius: 6px; color: var(--text); backdrop-filter: blur(4px);
   }
-  h1 { font-size: 15px; margin: 0 0 4px; letter-spacing: .3px; }
+  .head { display: flex; align-items: baseline; justify-content: space-between;
+          gap: 8px; margin: 0 0 4px; }
+  h1 { font-size: 15px; margin: 0; letter-spacing: .3px; }
   #object {
     font-size: 20px; font-weight: 600; color: var(--accent);
     margin: 0 0 6px; overflow-wrap: anywhere;
@@ -84,7 +86,7 @@
   td { padding: 3px 0; overflow-wrap: anywhere; vertical-align: top; }
   td:last-child { text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; }
   .chan-R { color: #ff6b6b; } .chan-G { color: #59d98b; } .chan-B { color: #5aa9ff; }
-  #conn { font-size: 12px; color: var(--dim); margin-top: 20px; }
+  #conn { font-size: 12px; color: var(--dim); white-space: nowrap; }
   #conn.ok::before { content: "● "; color: #59d98b; }
   #conn.down::before { content: "● "; color: #ff6b6b; }
 </style>
@@ -107,7 +109,10 @@
 
   <aside>
     <div id="object" hidden></div>
-    <h1>RGB Livestacker</h1>
+    <div class="head">
+      <h1>WebStacker</h1>
+      <div id="conn" class="down">connecting…</div>
+    </div>
     <div class="sub" id="ref">no reference yet</div>
 
     <h2>Display stretch (linked)</h2>
@@ -166,7 +171,6 @@
       <tr><td>White balance</td><td id="cal-wb">–</td></tr>
     </table>
 
-    <div id="conn" class="down">connecting…</div>
   </aside>
 
 <script>
@@ -278,7 +282,7 @@ function renderStatus(s) {
   const object = s.object || "";
   $("object").textContent = object;
   $("object").hidden = !object;
-  document.title = object ? `${object} — RGB Livestacker` : "RGB Livestacker";
+  document.title = object ? `${object} — WebStacker` : "WebStacker";
   $("lum-ctl").hidden = !s.luminance;
   $("ha-ctl").hidden = !s.ha;
   if (s.calibration) {
