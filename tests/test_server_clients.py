@@ -9,6 +9,7 @@ import threading
 import time
 
 import numpy as np
+import pytest
 from PIL import Image
 from websockets.sync.client import connect
 
@@ -310,3 +311,80 @@ def test_restart_right_after_a_session_is_not_mistaken_for_port_in_use():
     srv.close()                   # nothing is listening any more
 
     LiveStacker(StackConfig(), "127.0.0.1", port, _free_port()).bind()    # must not raise
+
+
+def test_viewer_limit_can_be_changed_while_running():
+    cfg = StackConfig(hot_pixel_enabled=False, background_enabled=False,
+                      auto_white_balance=False, sigma_clip_enabled=False)
+    ws_port, web_port = _free_port(), _free_port()
+    stacker = LiveStacker(cfg, "127.0.0.1", ws_port, web_port, max_viewers=1)
+    _start(stacker, ws_port)
+    url = f"ws://127.0.0.1:{ws_port}"
+
+    def refused():
+        with connect(url, max_size=None) as c:
+            try:
+                for _ in range(5):
+                    c.recv(timeout=5)
+            except ConnectionClosed as exc:
+                return exc.rcvd is not None and exc.rcvd.code == 1013
+        return False
+
+    from websockets.exceptions import ConnectionClosed
+    with connect(url, max_size=None) as a:
+        a.recv(timeout=5)
+        assert refused()                                  # limit 1: second is turned away
+        stacker.set_max_viewers(2)                        # ...raised live
+        with connect(url, max_size=None) as b:
+            b.recv(timeout=5)                             # now admitted, no restart
+            stacker.set_max_viewers(1)                    # lowered below the 2 connected
+            time.sleep(0.3)
+            assert len(stacker._clients) == 2             # they are left alone
+            assert refused()                              # but nobody new gets in
+    stacker.set_max_viewers(0)
+    assert stacker.max_viewers == 1                       # clamped to the allowed range
+    stacker.set_max_viewers(10_000)
+    assert stacker.max_viewers == 500
+
+
+def test_launcher_can_change_the_limit_over_stdin(tmp_path):
+    import subprocess
+    import sys
+    from livestacker.__main__ import apply_launcher_command
+
+    stacker = LiveStacker(StackConfig(), "127.0.0.1", 1, 2)
+    apply_launcher_command(stacker, "@@max_viewers 7\n")
+    assert stacker.max_viewers == 7
+    for junk in ("@@max_viewers abc\n", "@@max_viewers \n", "hello\n", ""):
+        apply_launcher_command(stacker, junk)             # ignored, no crash
+    assert stacker.max_viewers == 7
+
+    # end to end, the way the launcher drives a real server process
+    from websockets.exceptions import ConnectionClosed
+    ws_port = _free_port()
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "livestacker", "--replay", str(tmp_path),
+         "--web-port", str(_free_port()), "--ws-port", str(ws_port),
+         "--exit-with-launcher", "--max-viewers", "1"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        for _ in range(100):
+            try:
+                socket.create_connection(("127.0.0.1", ws_port), timeout=0.1).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        url = f"ws://127.0.0.1:{ws_port}"
+        with connect(url, max_size=None) as a:
+            a.recv(timeout=5)
+            with connect(url, max_size=None) as b:        # limit 1: turned away
+                with pytest.raises(ConnectionClosed):
+                    for _ in range(5):
+                        b.recv(timeout=5)
+            proc.stdin.write("@@max_viewers 3\n")        # what the launcher sends
+            proc.stdin.flush()
+            time.sleep(0.5)
+            with connect(url, max_size=None) as c:        # now admitted
+                assert c.recv(timeout=5)
+    finally:
+        proc.kill()

@@ -62,6 +62,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p.add_argument("--object-name", default="", metavar="NAME",
                    help="the target's name, shown on the web page")
+    p.add_argument("--max-viewers", type=int, default=16, metavar="N",
+                   help="most browsers connected at once (default 16, 1-500)")
     p.add_argument("--no-narrowband", action="store_true",
                    help="ignore narrowband (H / O / S) subs: skip them on arrival "
                         "so the stack is RGB (+L) only")
@@ -91,14 +93,29 @@ def build_parser() -> argparse.ArgumentParser:
 VIEWERS_MARKER = "@@viewers "          # the launcher watches for lines starting with this
 
 
-def _exit_when_stdin_closes() -> None:
-    """Block until stdin hits end-of-file, then exit. The launcher keeps the write
-    end of our stdin open for as long as it lives; the OS closes it when the
-    launcher goes away however it goes (quit, crash, kill -9), which is what makes
-    this work where a signal handler or `atexit` would not."""
+LIMIT_MARKER = "@@max_viewers "         # launcher -> server: change the viewer limit
+
+
+def apply_launcher_command(stacker: LiveStacker, line: str) -> None:
+    """One line from the launcher: '@@max_viewers N' changes the viewer limit live.
+    Anything else (or a bad number) is ignored."""
+    if line.startswith(LIMIT_MARKER):
+        try:
+            stacker.set_max_viewers(int(line[len(LIMIT_MARKER):].strip()))
+        except ValueError:
+            return
+        logging.getLogger("livestacker").info(
+            "viewer limit is now %d", stacker.max_viewers)
+
+
+def _watch_launcher(stacker: LiveStacker) -> None:
+    """Read commands from the launcher on stdin until it goes away, then exit. The
+    launcher keeps the write end of our stdin open for as long as it lives; the OS
+    closes it when the launcher goes away however it goes (quit, crash, kill -9),
+    which is what makes this work where a signal handler or `atexit` would not."""
     try:
-        while sys.stdin.read(1024):
-            pass
+        for line in sys.stdin:
+            apply_launcher_command(stacker, line)
     except Exception:
         pass
     logging.getLogger("livestacker").info("launcher is gone: stopping")
@@ -167,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
     # in a process listing or the launcher's command echo.
     password = os.environ.get("LIVESTACK_PASSWORD", "")
     stacker = LiveStacker(cfg, args.host, args.ws_port, args.web_port, calibrator,
-                          password=password)
+                          password=password, max_viewers=args.max_viewers)
     if password:
         logging.getLogger("livestacker").info("password protection is ON")
 
@@ -188,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
                               interval=args.interval, limit=args.limit)
 
     if args.exit_with_launcher:
-        threading.Thread(target=_exit_when_stdin_closes, daemon=True).start()
+        threading.Thread(target=_watch_launcher, args=(stacker,), daemon=True).start()
         # tell the launcher how many browsers are connected (a line it reads and
         # does not show in its log)
         stacker.on_viewers = lambda n: print(f"{VIEWERS_MARKER}{n}", flush=True)

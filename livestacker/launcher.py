@@ -49,10 +49,12 @@ DEFAULTS = {
     "web_port": 8080,
     "ws_port": 8081,
     "open_browser": True,
+    "max_viewers": 16,
 }
 
 
 VIEWERS_MARKER = "@@viewers "     # keep in step with __main__.VIEWERS_MARKER
+LIMIT_MARKER = "@@max_viewers "   # ... and __main__.LIMIT_MARKER
 
 
 def parse_viewers(line: str) -> int | None:
@@ -71,6 +73,7 @@ class Launcher:
         root.title("RGB Livestacker")
         root.minsize(640, 560)
 
+        self._viewers_n: int | None = None
         self.proc: subprocess.Popen | None = None
         self.log_q: "queue.Queue[str]" = queue.Queue()
         # not in self.v: that is what gets saved to disk, and a password should
@@ -201,6 +204,12 @@ class Launcher:
                         variable=self.v["open_browser"]).pack(side="left")
         ttk.Checkbutton(net, text="Share on local network",
                         variable=self.v["share_lan"]).pack(side="left", padx=16)
+        ttk.Label(net, text="Max browsers").pack(side="left")
+        ttk.Spinbox(net, from_=1, to=500, width=5,
+                    textvariable=self.v["max_viewers"]).pack(side="left", padx=6)
+        ttk.Label(net, text="(changes apply at once)", foreground="#888").pack(side="left")
+        self._limit_job = None
+        self.v["max_viewers"].trace_add("write", self._limit_edited)
 
         # -- run controls ------------------------------------------
         run = ttk.Frame(frm)
@@ -299,15 +308,48 @@ class Launcher:
             self._finished(self.proc.returncode)
         self.root.after(100, self._drain_log)
 
+    def _limit(self) -> int | None:
+        """The 'Max browsers' box as a number, or None while it holds nonsense."""
+        try:
+            n = int(float(self.v["max_viewers"].get()))
+        except (ValueError, tk.TclError):
+            return None
+        return n if 1 <= n <= 500 else None
+
+    def _limit_edited(self, *_) -> None:
+        # (the box fires on every keystroke: wait until typing pauses)
+        if self._limit_job is not None:
+            self.root.after_cancel(self._limit_job)
+        self._limit_job = self.root.after(400, self._push_limit)
+        self._show_viewers(self._viewers_n)
+
+    def _push_limit(self) -> None:
+        """Tell the running server the new limit; it takes effect straight away."""
+        self._limit_job = None
+        n = self._limit()
+        if n is None or not self.proc or self.proc.poll() is not None:
+            return
+        try:
+            self.proc.stdin.write(f"{LIMIT_MARKER}{n}\n")
+            self.proc.stdin.flush()
+        except (OSError, ValueError):
+            pass
+
     def _show_viewers(self, n: int | None) -> None:
         """n browsers connected right now; None = the stacker isn't running."""
+        self._viewers_n = n
+        limit = self._limit()
+        of = f" of {limit}" if limit else ""
         if n is None:
             self.viewers.configure(text="")
         elif n == 0:
-            self.viewers.configure(text="no browsers connected", foreground="#888")
+            self.viewers.configure(text=f"0{of} browsers connected", foreground="#888")
         else:
+            full = limit is not None and n >= limit
             self.viewers.configure(
-                text=f"● {n} browser{'s' if n != 1 else ''} connected", foreground="#3a8")
+                text=f"● {n}{of} browser{'s' if (n != 1 or of) else ''} connected"
+                     + (" (full)" if full else ""),
+                foreground="#c80" if full else "#3a8")
 
     # -- run / stop -------------------------------------------------
 
@@ -322,6 +364,11 @@ class Launcher:
             cmd += ["--interval", self.v["interval"].get()]
         elif not self.v["catch_up"].get():
             cmd.append("--no-catch-up")
+        limit = self._limit()
+        if limit is None:
+            messagebox.showerror("Livestacker", "Max browsers must be a number from 1 to 500.")
+            return None
+        cmd += ["--max-viewers", str(limit)]
         name = self.v["object_name"].get().strip()
         if name:
             cmd += ["--object-name", name]

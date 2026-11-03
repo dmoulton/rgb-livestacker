@@ -58,8 +58,11 @@ LOGIN_LOCKOUT_MAX_S = 3600            # ...up to this
 # tunnel hosts that are https-only: a login cookie for them is always marked Secure
 HTTPS_ONLY_SUFFIXES = (".lhr.life", ".localhost.run")
 HTTP_TIMEOUT_S = 10                   # drop a connection that sends nothing for this long
-MAX_HTTP_CONNECTIONS = 64             # simultaneous web connections (live ones included)
-MAX_VIEWERS = 16                      # simultaneous live browsers
+MAX_VIEWERS = 16                      # simultaneous live browsers (the default; settable)
+VIEWERS_LIMITS = (1, 500)             # the range the limit may be set to
+# Web connections allowed on top of the live viewers' own (each one holds a
+# connection open): page loads, logins, downloads. The total follows the viewer limit.
+HTTP_EXTRA_CONNECTIONS = 48
 SNAPSHOTS_AT_ONCE = 2                 # full-size PNG renders / downloads at a time
 
 
@@ -89,14 +92,20 @@ class _WebServer(http.server.ThreadingHTTPServer):
 
     allow_reuse_address = sys.platform != "win32"
 
-    def __init__(self, *args, **kwargs):
-        self._slots = threading.BoundedSemaphore(MAX_HTTP_CONNECTIONS)
+    def __init__(self, *args, limit=lambda: 64, **kwargs):
+        self._limit = limit               # callable: the cap changes with the viewer limit
+        self._active = 0
+        self._active_lock = threading.Lock()
         super().__init__(*args, **kwargs)
 
     def process_request(self, request, client_address):
         # one thread per connection, so cap them: past the limit, turn people away
         # rather than let idle or hostile connections pile up without bound
-        if not self._slots.acquire(blocking=False):
+        with self._active_lock:
+            room = self._active < self._limit()
+            if room:
+                self._active += 1
+        if not room:
             try:
                 request.sendall(b"HTTP/1.0 503 Service Unavailable\r\n"
                                 b"Retry-After: 5\r\nContent-Length: 0\r\n\r\n")
@@ -110,7 +119,8 @@ class _WebServer(http.server.ThreadingHTTPServer):
         try:
             super().process_request_thread(request, client_address)
         finally:
-            self._slots.release()
+            with self._active_lock:
+                self._active -= 1
 
     def server_bind(self) -> None:
         if sys.platform == "win32":
@@ -150,9 +160,12 @@ def _params_key(p: StretchParams) -> tuple:
 
 class LiveStacker:
     def __init__(self, cfg: StackConfig, host: str, ws_port: int, web_port: int,
-                 calibrator: Calibrator | None = None, password: str = ""):
+                 calibrator: Calibrator | None = None, password: str = "",
+                 max_viewers: int | None = None):
         self.cfg = cfg
         self._httpd = None
+        self.max_viewers = MAX_VIEWERS
+        self.set_max_viewers(MAX_VIEWERS if max_viewers is None else max_viewers)
         self.on_viewers = None            # optional callback(n): live browser count changed
         self.password = password          # "" = no password, open to anyone
         self._sessions: dict[str, float] = {}      # login cookie -> expiry time
@@ -253,6 +266,13 @@ class LiveStacker:
             return False
         with self._auth_lock:
             return self._sessions.get(token, 0.0) > time.time()
+
+    def set_max_viewers(self, n: int) -> None:
+        """How many browsers may be connected at once. Safe to change while
+        running: it applies to the next browser to connect. Browsers already
+        connected are left alone even if the new limit is below their number."""
+        lo, hi = VIEWERS_LIMITS
+        self.max_viewers = max(lo, min(hi, int(n)))
 
     def _note_viewers(self, n: int) -> None:
         if self.on_viewers is not None:
@@ -409,7 +429,7 @@ class LiveStacker:
 
     async def _ws_handler(self, ws) -> None:
         with self._clients_lock:
-            full = len(self._clients) >= MAX_VIEWERS
+            full = len(self._clients) >= self.max_viewers
             if not full:
                 self._clients[ws] = StretchParams()  # replaced by the page's own
             total = len(self._clients)
@@ -655,8 +675,9 @@ class LiveStacker:
         if getattr(self, "_httpd", None) is not None:
             return
         try:
-            self._httpd = _WebServer((self.host, self.web_port),
-                                     self._make_http_handler())
+            self._httpd = _WebServer(
+                (self.host, self.web_port), self._make_http_handler(),
+                limit=lambda: self.max_viewers + HTTP_EXTRA_CONNECTIONS)
         except OSError as exc:
             raise OSError(f"web port {self.web_port} is not available ({exc.strerror})"
                           f" — is another stacker already running?") from exc

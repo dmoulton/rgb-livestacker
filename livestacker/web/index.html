@@ -526,8 +526,10 @@ function connect() {
     $("conn").className = "ok"; $("conn").textContent = "live";
     sendNow();            // (re)introduce this browser's own display settings
   };
-  ws.onclose = () => {
-    $("conn").className = "down"; $("conn").textContent = "disconnected — retrying";
+  ws.onclose = (ev) => {
+    $("conn").className = "down";
+    // 1013 = the server is at its viewer limit: it keeps trying until a seat is free
+    $("conn").textContent = ev && ev.code === 1013 ? "full — retrying" : "disconnected — retrying";
     clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(connect, 1500);
   };

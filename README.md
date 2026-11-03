@@ -78,8 +78,10 @@ browsers reach it through the web port. The tunnel service terminates the
 encryption on its own servers, so it can in principle see what passes through.
 
 Other protections, on whether or not a password is set: connections that go quiet
-for 10 seconds are dropped; at most 64 web connections, 16 live browsers and 2
-full-size PNG downloads are served at once (extra ones are turned away and can
+for 10 seconds are dropped; at most 16 live browsers (the launcher's *Max browsers* box, 1 to 500; it can
+be changed while the stacker is running and takes effect for the next browser,
+and the launcher shows "3 of 16 browsers connected"), a matching number of web
+connections, and 2 full-size PNG downloads are served at once (extra ones are turned away and can
 retry); only the stacker's own page is served (no file browsing); responses carry
 a strict content-security policy and the usual anti-framing / no-sniff headers;
 and the browser is sent file names, never your folder paths.
@@ -110,6 +112,7 @@ The launcher shows, beside Start / Stop, how many browsers are connected right n
 | `--hot-pixel-sigma N` | hot-pixel detection threshold, robust sigma (default 8) |
 | `--no-sigma-clip` | disable rolling per-pixel trail/cosmic rejection (on by default) |
 | `--sigma-clip-kappa N` | sigma-clip rejection threshold (default 3.0) |
+| `--max-viewers N` | most browsers connected at once (default 16, 1-500). The launcher's *Max browsers* box can change it live; more viewers means more upload bandwidth and a bigger share of the CPU |
 | `--object-name NAME` | the target's name, shown at the top of the web page and in the tab title (default: the `OBJECT` header of the first light frame; the launcher fills its box from the folder, and anything you type there wins) |
 | `--no-narrowband` | ignore narrowband (H / O / S) subs — skipped on arrival, so the stack is RGB (+L) only |
 | `--no-background` | disable gradient/background subtraction |

@@ -214,7 +214,9 @@ def test_idle_connections_are_dropped(monkeypatch):
 
 
 def test_connections_are_capped(monkeypatch):
-    monkeypatch.setattr(server_mod, "MAX_HTTP_CONNECTIONS", 3)
+    # cap = live-viewer limit + a few extra for page loads: 1 + 2 = 3 here
+    monkeypatch.setattr(server_mod, "MAX_VIEWERS", 1)
+    monkeypatch.setattr(server_mod, "HTTP_EXTRA_CONNECTIONS", 2)
     _, web = _server("")
     idle = [socket.create_connection(("127.0.0.1", web)) for _ in range(3)]
     try:
@@ -275,3 +277,18 @@ def test_a_login_lasts_24_hours():
     assert stacker.valid_session(token)
     stacker._sessions[token] = time.time() - 1
     assert not stacker.valid_session(token)
+
+
+def test_connection_cap_follows_the_viewer_limit(monkeypatch):
+    monkeypatch.setattr(server_mod, "MAX_VIEWERS", 1)
+    monkeypatch.setattr(server_mod, "HTTP_EXTRA_CONNECTIONS", 2)
+    stacker, web = _server("")
+    idle = [socket.create_connection(("127.0.0.1", web)) for _ in range(3)]
+    try:
+        time.sleep(0.4)
+        assert _http(web, "GET", "/")[0] == 503                 # 3 of 3 used
+        stacker.set_max_viewers(4)                              # cap is now 4 + 2 = 6
+        assert _http(web, "GET", "/")[0] == 200                 # room, no restart
+    finally:
+        for s in idle:
+            s.close()
