@@ -177,7 +177,7 @@ class Launcher:
         pw = ttk.Frame(frm)
         pw.grid(row=r, column=0, columnspan=3, sticky="ew", **pad); r += 1
         ttk.Label(pw, text="Password").pack(side="left")
-        ttk.Entry(pw, textvariable=self.password, show="•", width=24).pack(
+        ttk.Entry(pw, textvariable=self.password, width=24).pack(
             side="left", padx=8)
         ttk.Label(pw, text="optional: browsers must enter it. Not saved.",
                   foreground="#888").pack(side="left")

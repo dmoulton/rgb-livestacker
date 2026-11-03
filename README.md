@@ -60,7 +60,7 @@ you zoom past what the downscaled preview can show.
 
 **Password (optional).** Type one into the launcher's *Password* box (not saved;
 it is asked for again at each launch). With a password set, a browser sees a
-login page first, and the page, the PNG download and the live connection all
+login page first (with a Show/Hide button for what it types), and the page, the PNG download and the live connection all
 need to be signed in (the login lasts 30 days in that browser, or until the
 stacker restarts). Any password is accepted, with no length or content rules.
 Five wrong guesses in a row lock logins out for 30 seconds. From the command

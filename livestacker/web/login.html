@@ -22,11 +22,19 @@
   }
   h1 { font-size: 18px; margin: 0 0 4px; }
   p { color: var(--dim); margin: 0 0 16px; font-size: 13px; }
-  input[type=password] {
+  input[type=password], input[type=text] {
     width: 100%; padding: 9px 10px; border-radius: 6px; font: inherit;
     background: var(--bg); color: var(--text); border: 1px solid var(--line);
   }
-  input[type=password]:focus { outline: none; border-color: var(--accent); }
+  input[type=password]:focus, input[type=text]:focus { outline: none; border-color: var(--accent); }
+  .field { position: relative; }
+  .field input { padding-right: 58px; }
+  .reveal {
+    position: absolute; right: 4px; top: 4px; bottom: 4px; width: auto; margin: 0;
+    padding: 0 10px; background: transparent; color: var(--dim);
+    border: 0; font-weight: 500; font-size: 12px;
+  }
+  .reveal:hover { color: var(--text); }
   button {
     width: 100%; margin-top: 12px; padding: 9px; border-radius: 6px; font: inherit;
     background: var(--accent); color: #07111f; border: 0; font-weight: 600; cursor: pointer;
@@ -38,10 +46,24 @@
   <form method="post" action="/login">
     <h1>WebStacker</h1>
     <p>This stacker is password protected.</p>
-    <input type="password" name="password" placeholder="Password" autofocus
-           autocomplete="current-password" aria-label="Password">
+    <div class="field">
+      <input type="password" id="pw" name="password" placeholder="Password" autofocus
+             autocomplete="current-password" aria-label="Password">
+      <button type="button" class="reveal" id="reveal" aria-pressed="false"
+              aria-controls="pw">Show</button>
+    </div>
     <button type="submit">Open</button>
     {{MESSAGE}}
   </form>
+<script>
+  const pw = document.getElementById("pw"), reveal = document.getElementById("reveal");
+  reveal.addEventListener("click", () => {
+    const show = pw.type === "password";
+    pw.type = show ? "text" : "password";
+    reveal.textContent = show ? "Hide" : "Show";
+    reveal.setAttribute("aria-pressed", show);
+    pw.focus();
+  });
+</script>
 </body>
 </html>

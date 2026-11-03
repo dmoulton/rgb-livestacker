@@ -71,6 +71,7 @@ def test_everything_is_locked_until_login():
         status, _, body = _http(web, "GET", path)
         assert status == 200 and b'type="password"' in body   # the login form...
         assert b"WebSocket" not in body                        # ...not the app
+        assert b'id="reveal"' in body                          # with a show/hide toggle
     assert _http(web, "GET", "/snapshot.png")[0] == 401
     assert _http(web, "GET", "/ws")[0] == 401
     assert _http(web, "HEAD", "/")[0] == 401                   # HEAD is gated too
