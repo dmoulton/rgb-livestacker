@@ -151,7 +151,7 @@ def test_security_headers_nonce_and_nothing_else_is_served():
 def test_login_cookie_is_secure_behind_https_and_on_tunnel_hosts():
     _, web = _server("pw")
     plain = _login(web, "pw")[1]["Set-Cookie"]
-    assert "Secure" not in plain and "Max-Age=604800" in plain          # 7 days
+    assert "Secure" not in plain and "Max-Age=86400" in plain          # 24 hours
     via_proxy = _login(web, "pw", {"X-Forwarded-Proto": "https"})[1]["Set-Cookie"]
     assert "Secure" in via_proxy
     on_tunnel = _login(web, "pw", {"Host": "abc123.lhr.life"})[1]["Set-Cookie"]
@@ -265,3 +265,13 @@ def test_only_a_couple_of_full_size_pngs_at_once(monkeypatch):
         first.join(10)
     stacker.pipeline.snapshot_png = real
     assert _http(web, "GET", "/snapshot.png")[0] == 200
+
+
+def test_a_login_lasts_24_hours():
+    stacker, web = _server("pw")
+    token = stacker.new_session()
+    left = stacker._sessions[token] - time.time()
+    assert 24 * 3600 - 5 < left <= 24 * 3600
+    assert stacker.valid_session(token)
+    stacker._sessions[token] = time.time() - 1
+    assert not stacker.valid_session(token)

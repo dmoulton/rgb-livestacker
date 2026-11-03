@@ -52,6 +52,19 @@ DEFAULTS = {
 }
 
 
+VIEWERS_MARKER = "@@viewers "     # keep in step with __main__.VIEWERS_MARKER
+
+
+def parse_viewers(line: str) -> int | None:
+    """The browser count from a '@@viewers N' line the server prints, else None."""
+    if not line.startswith(VIEWERS_MARKER):
+        return None
+    try:
+        return max(0, int(line[len(VIEWERS_MARKER):].strip()))
+    except ValueError:
+        return None
+
+
 class Launcher:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -198,6 +211,8 @@ class Launcher:
         self.stop_btn.pack(side="left", padx=6)
         self.status = ttk.Label(run, text="idle", foreground="#888")
         self.status.pack(side="left", padx=12)
+        self.viewers = ttk.Label(run, text="")          # live browser count
+        self.viewers.pack(side="right", padx=4)
 
         frm.rowconfigure(r, weight=1)
         self.log = tk.Text(frm, height=12, wrap="none", state="disabled",
@@ -272,12 +287,27 @@ class Launcher:
     def _drain_log(self) -> None:
         try:
             while True:
-                self._append(self.log_q.get_nowait())
+                line = self.log_q.get_nowait()
+                n = parse_viewers(line)
+                if n is None:
+                    self._append(line)
+                else:
+                    self._show_viewers(n)
         except queue.Empty:
             pass
         if self.proc and self.proc.poll() is not None:
             self._finished(self.proc.returncode)
         self.root.after(100, self._drain_log)
+
+    def _show_viewers(self, n: int | None) -> None:
+        """n browsers connected right now; None = the stacker isn't running."""
+        if n is None:
+            self.viewers.configure(text="")
+        elif n == 0:
+            self.viewers.configure(text="no browsers connected", foreground="#888")
+        else:
+            self.viewers.configure(
+                text=f"● {n} browser{'s' if n != 1 else ''} connected", foreground="#3a8")
 
     # -- run / stop -------------------------------------------------
 
@@ -355,6 +385,7 @@ class Launcher:
         self.start_btn["state"] = "disabled"
         self.stop_btn["state"] = "normal"
         self.status.configure(text="running", foreground="#3a8")
+        self._show_viewers(0)
         if self.v["open_browser"].get():
             host = "localhost"
             url = f"http://{host}:{self.v['web_port'].get()}/"
@@ -375,6 +406,7 @@ class Launcher:
 
     def _finished(self, code: int) -> None:
         self.proc = None
+        self._show_viewers(None)
         self.start_btn["state"] = "normal"
         self.stop_btn["state"] = "disabled"
         ok = code == 0

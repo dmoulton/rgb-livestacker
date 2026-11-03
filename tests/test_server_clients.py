@@ -265,3 +265,48 @@ def test_a_port_already_in_use_stops_the_stacker_with_a_clear_error(tmp_path):
         assert "--web-port" in out.stderr
     finally:
         holder.close()
+
+
+def test_viewer_count_is_reported_as_browsers_come_and_go():
+    cfg = StackConfig(hot_pixel_enabled=False, background_enabled=False,
+                      auto_white_balance=False, sigma_clip_enabled=False)
+    ws_port, web_port = _free_port(), _free_port()
+    stacker = LiveStacker(cfg, "127.0.0.1", ws_port, web_port)
+    counts = []
+    stacker.on_viewers = counts.append
+    _start(stacker, ws_port)
+    url = f"ws://127.0.0.1:{ws_port}"
+
+    def wait_for(want):
+        for _ in range(100):
+            if counts and counts[-1] == want:
+                return
+            time.sleep(0.05)
+        raise AssertionError(f"expected {want}, saw {counts}")
+
+    with connect(url) as a:
+        a.recv(timeout=5)
+        wait_for(1)
+        with connect(url) as b:
+            b.recv(timeout=5)
+            wait_for(2)
+        wait_for(1)
+    wait_for(0)
+    assert counts == [1, 2, 1, 0]
+
+
+def test_restart_right_after_a_session_is_not_mistaken_for_port_in_use():
+    """Sockets the OS keeps for a minute after browsers disconnect (TIME_WAIT) must
+    not make the next start refuse with 'port in use'."""
+    port = _free_port()
+    srv = socket.socket()
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", port))
+    srv.listen()
+    cli = socket.create_connection(("127.0.0.1", port))
+    conn, _ = srv.accept()
+    conn.close()                  # the server side closes first: it keeps the TIME_WAIT
+    cli.close()
+    srv.close()                   # nothing is listening any more
+
+    LiveStacker(StackConfig(), "127.0.0.1", port, _free_port()).bind()    # must not raise

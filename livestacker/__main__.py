@@ -88,6 +88,9 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+VIEWERS_MARKER = "@@viewers "          # the launcher watches for lines starting with this
+
+
 def _exit_when_stdin_closes() -> None:
     """Block until stdin hits end-of-file, then exit. The launcher keeps the write
     end of our stdin open for as long as it lives; the OS closes it when the
@@ -186,6 +189,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.exit_with_launcher:
         threading.Thread(target=_exit_when_stdin_closes, daemon=True).start()
+        # tell the launcher how many browsers are connected (a line it reads and
+        # does not show in its log)
+        stacker.on_viewers = lambda n: print(f"{VIEWERS_MARKER}{n}", flush=True)
 
     try:
         source.start()

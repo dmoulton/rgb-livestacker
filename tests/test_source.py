@@ -59,3 +59,57 @@ def test_server_exits_when_the_launcher_pipe_closes(tmp_path):
     finally:
         if proc.poll() is None:
             proc.kill()
+
+
+def test_launcher_gets_the_live_browser_count(tmp_path):
+    """Started the way the launcher starts it, the server prints '@@viewers N'
+    lines on stdout as browsers connect and leave, and the launcher can parse them."""
+    import socket
+    import subprocess
+    import sys
+    import threading
+    import time
+
+    import pytest
+    pytest.importorskip("tkinter")
+    from livestacker.launcher import parse_viewers
+    from websockets.sync.client import connect
+
+    assert parse_viewers("@@viewers 3\n") == 3
+    assert parse_viewers("@@viewers 0") == 0
+    assert parse_viewers("@@viewers x") is None
+    assert parse_viewers("client connected (1.2.3.4), 3 total") is None
+
+    def port():
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+    ws_port = port()
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "livestacker", "--replay", str(tmp_path),
+         "--web-port", str(port()), "--ws-port", str(ws_port), "--exit-with-launcher"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    seen = []
+    threading.Thread(target=lambda: [seen.append(parse_viewers(l)) for l in proc.stdout],
+                     daemon=True).start()
+    try:
+        for _ in range(100):
+            try:
+                socket.create_connection(("127.0.0.1", ws_port), timeout=0.1).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        with connect(f"ws://127.0.0.1:{ws_port}") as c:
+            c.recv(timeout=5)
+            for _ in range(100):
+                if 1 in seen:
+                    break
+                time.sleep(0.05)
+            assert 1 in seen
+        for _ in range(100):
+            if [n for n in seen if n is not None][-1:] == [0]:
+                break
+            time.sleep(0.05)
+        assert [n for n in seen if n is not None][-1:] == [0]
+    finally:
+        proc.kill()

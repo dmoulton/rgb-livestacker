@@ -61,7 +61,7 @@ you zoom past what the downscaled preview can show.
 **Password (optional).** Type one into the launcher's *Password* box (not saved;
 it is asked for again at each launch). With a password set, a browser sees a
 login page first (with a Show/Hide button for what it types), and the page, the
-PNG download and the live connection all need it. A login lasts 7 days in that
+PNG download and the live connection all need it. A login lasts 24 hours in that
 browser, or until you press **Sign out** (which also cuts that login's live
 connection) or restart the stacker. Any password is accepted, with no length or
 content rules, but guessing is throttled: five wrong tries in a row lock logins
@@ -89,6 +89,9 @@ settings (stretch, gamma, green-noise, luminance, zoom, panel) are **per
 browser**: each is remembered in that browser, and the server renders each one
 its own preview, so moving a slider in one never changes another's picture. The
 "Save full-res PNG" link downloads the image with *that* browser's settings.
+
+The launcher shows, beside Start / Stop, how many browsers are connected right now
+("● 2 browsers connected").
 
 ### Options
 

@@ -51,7 +51,7 @@ log = logging.getLogger("livestacker.server")
 WEB_ROOT = Path(__file__).resolve().parent / "web"
 STALLED_BYTES = 32 * 1024 * 1024      # unsent data after which a browser is skipped
 SESSION_COOKIE = "ls_session"
-SESSION_DAYS = 7
+SESSION_HOURS = 24                    # how long a login lasts
 LOGIN_MAX_FAILS = 5                   # wrong passwords in a row before a lockout
 LOGIN_LOCKOUT_S = 30                  # first lockout; each further one doubles it...
 LOGIN_LOCKOUT_MAX_S = 3600            # ...up to this
@@ -153,6 +153,7 @@ class LiveStacker:
                  calibrator: Calibrator | None = None, password: str = ""):
         self.cfg = cfg
         self._httpd = None
+        self.on_viewers = None            # optional callback(n): live browser count changed
         self.password = password          # "" = no password, open to anyone
         self._sessions: dict[str, float] = {}      # login cookie -> expiry time
         self._login_fails = 0
@@ -220,7 +221,7 @@ class LiveStacker:
         now = time.time()
         with self._auth_lock:
             self._sessions = {t: e for t, e in self._sessions.items() if e > now}
-            self._sessions[token] = now + SESSION_DAYS * 86400
+            self._sessions[token] = now + SESSION_HOURS * 3600
         return token
 
     def end_session(self, token: str | None) -> None:
@@ -252,6 +253,13 @@ class LiveStacker:
             return False
         with self._auth_lock:
             return self._sessions.get(token, 0.0) > time.time()
+
+    def _note_viewers(self, n: int) -> None:
+        if self.on_viewers is not None:
+            try:
+                self.on_viewers(n)
+            except Exception:             # a reporting problem must never touch a viewer
+                pass
 
     def _status_json(self) -> str:
         return json.dumps({**self.pipeline.status(), "auth": bool(self.password)})
@@ -410,6 +418,7 @@ class LiveStacker:
             return
         peer = getattr(ws, "remote_address", ("?",))[0]
         log.info("client connected (%s), %d total", peer, total)
+        self._note_viewers(total)
         try:
             await ws.send(self._status_json())
             self._mark_dirty(ws)                     # show something right away
@@ -433,6 +442,7 @@ class LiveStacker:
                 self._dirty.discard(ws)
                 left = len(self._clients)
             log.info("client disconnected (%s), %d left", peer, left)
+            self._note_viewers(left)
 
     # -- http (static + snapshot) --------------------------------------
 
@@ -576,7 +586,7 @@ class LiveStacker:
                 if result == "ok":
                     token = stacker.new_session()
                     self._empty(303, Location="/",
-                                Set_Cookie=self._cookie(token, SESSION_DAYS * 86400))
+                                Set_Cookie=self._cookie(token, SESSION_HOURS * 3600))
                 elif result == "locked":
                     self._send_login(429, "Too many attempts. Try again later.")
                 else:
@@ -651,6 +661,11 @@ class LiveStacker:
             raise OSError(f"web port {self.web_port} is not available ({exc.strerror})"
                           f" — is another stacker already running?") from exc
         probe = socket.socket()
+        if sys.platform != "win32":
+            # the real websocket server binds with SO_REUSEADDR (asyncio does, on
+            # POSIX): without it, the leftover of a session that just ended would
+            # look like "port in use" for a minute and refuse a perfectly good restart
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             probe.bind((self._ws_host(), self.ws_port))
         except OSError as exc:
