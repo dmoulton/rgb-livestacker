@@ -243,3 +243,15 @@ def test_real_seestar_bayer_fits_stack():
     p.recombine()
     assert p.status()["total_frames"] == 4
     assert p.render_preview(StretchParams(auto=True)) is not None
+
+
+def test_status_says_whether_this_is_a_colour_camera_session(tmp_path):
+    rng = np.random.default_rng(7)
+    p = Pipeline(StackConfig(**CFG, osc_debayer="superpixel"))
+    assert p.status()["osc"] is False
+    path = tmp_path / "s.fits"
+    _write(path, _mosaic(_scene(rng), "RGGB", rng), "RGGB")
+    assert p.ingest(load_frame(path)).ok
+    st = p.status()
+    assert st["osc"] is True and st["total_frames"] == 1
+    assert sorted(st["channels"]) == ["B", "G", "R"]        # still tracked underneath

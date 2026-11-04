@@ -87,6 +87,7 @@ class Pipeline:
         self.started_at = time.time()
         self.rejected = 0
         self._osc_logged = False
+        self._osc = False               # a colour-camera session (Bayer frames)
         self.accepted = 0              # subs stacked (an OSC sub feeds three channels)
 
     # -- ingestion ---------------------------------------------------------
@@ -147,6 +148,7 @@ class Pipeline:
                          data.shape[1], data.shape[0],
                          "at full resolution" if method == "bilinear"
                          else "at half resolution (superpixel)")
+            self._osc = True
             cube = debayer(data, frame.bayer, method)
             planes = {name: self._crop_edges(cube[i]) for i, name in enumerate("RGB")}
             data = (planes["R"] + planes["G"] + planes["B"]) / 3.0
@@ -295,6 +297,7 @@ class Pipeline:
         flats = sorted(cal.flats) if cal and cal.flats else []
         return {
             "type": "status",
+            "osc": self._osc,
             "object": self.cfg.object_name or self._detected_object,
             "reference": self.reference_path,
             "reference_filter": self.reference_filter,

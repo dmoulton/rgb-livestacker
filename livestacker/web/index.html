@@ -67,6 +67,7 @@
   }
   .sub { color: var(--dim); font-size: 12px; margin: 18px 0 0; overflow-wrap: anywhere; }
   #signout { margin-top: 14px; }
+  #channels-h[hidden] + #channels { margin-top: 18px; }   /* the heading's gap, when it is hidden */
   h2 {
     font-size: 11px; text-transform: uppercase; letter-spacing: .8px;
     color: var(--dim); margin: 22px 0 10px; font-weight: 600;
@@ -154,7 +155,7 @@
     </div>
     <a class="btn" id="save" href="/snapshot.png" download="livestack.png">Save full-res PNG</a>
 
-    <h2>Channels</h2>
+    <h2 id="channels-h">Channels</h2>
     <table id="channels"><tbody></tbody></table>
 
     <h2>Session</h2>
@@ -309,17 +310,24 @@ function renderStatus(s) {
   body.innerHTML = "";
   const fmt = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + "M"
     : n >= 1e3 ? (n / 1e3).toFixed(0) + "k" : String(n);
-  for (const [name, c] of Object.entries(s.channels)) {
+  // a colour camera feeds R, G and B together, so per-channel counts would just
+  // repeat the same number three times: show one "Stacked frames" line instead
+  const rows = s.osc
+    ? [["Stacked frames", s.total_frames,
+        Object.values(s.channels).reduce((n, c) => n + (c.clipped_px || 0), 0)]]
+    : Object.entries(s.channels).map(([name, c]) => [name, c.frames, c.clipped_px]);
+  $("channels-h").hidden = !!s.osc;
+  for (const [name, frames, clipped] of rows) {
     const tr = document.createElement("tr");
     const th = document.createElement("td");
     th.textContent = name;
     if (/^[RGB]$/.test(name)) th.className = "chan-" + name;   // never build markup from a header value
     const td = document.createElement("td");
-    td.textContent = String(c.frames);
-    if (c.clipped_px) {
+    td.textContent = String(frames);
+    if (clipped) {
       const clip = document.createElement("span");
       clip.style.color = "var(--dim)";
-      clip.textContent = ` (${fmt(c.clipped_px)} clipped)`;
+      clip.textContent = ` (${fmt(clipped)} clipped)`;
       td.appendChild(clip);
     }
     tr.append(th, td);
