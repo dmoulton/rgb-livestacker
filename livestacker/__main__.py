@@ -1,6 +1,7 @@
 """Command-line entry point.
 
     python -m livestacker --watch  "/path/to/capture/folder"
+    python -m livestacker --watch  "/drive1/night1" --watch "/drive2/night2"
     python -m livestacker --replay "/path/to/old/session" --interval 1.5
 """
 
@@ -23,10 +24,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="livestacker", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     src = p.add_mutually_exclusive_group(required=True)
-    src.add_argument("--watch", metavar="DIR",
-                     help="watch a live capture folder for new subs")
-    src.add_argument("--replay", metavar="DIR",
-                     help="replay an existing folder as if it were being captured")
+    src.add_argument("--watch", metavar="DIR", action="append",
+                     help="watch a live capture folder for new subs (repeat the "
+                          "option to watch several; existing subs are stacked in "
+                          "capture-time order)")
+    src.add_argument("--replay", metavar="DIR", action="append",
+                     help="replay an existing folder as if it were being captured "
+                          "(repeatable)")
 
     p.add_argument("--interval", type=float, default=2.0,
                    help="replay: seconds between frames (default: 2)")

@@ -44,6 +44,12 @@ livestack.bat --replay "C:\path\to\old\session"
 livestack.bat --watch  "C:\path\to\NINA\Images"
 ```
 
+The launcher has a **Folders** list with *Add…* and *Remove* buttons for the same
+thing: add as many capture folders as you like (say one per night, or one per drive).
+Before starting it warns if a folder is missing, or if the folders look like different
+targets (everything is aligned to the very first frame, so another target's subs
+would be rejected). The list is chosen at start; changing it means restarting.
+
 Then open <http://localhost:8080/>. The page's live connection runs over that same
 port (`/ws`), so it also works through a tunnel or reverse proxy that forwards only
 the web port (e.g. `ssh -R 80:localhost:8080 localhost.run`). Note there is no
@@ -99,7 +105,7 @@ The launcher shows, beside Start / Stop, how many browsers are connected right n
 
 | flag | meaning |
 |---|---|
-| `--watch DIR` / `--replay DIR` | live folder watch, or replay an existing one |
+| `--watch DIR` / `--replay DIR` | live folder watch, or replay an existing one. **Repeat it to use several folders** (`--watch /a --watch /b`): subs already on disk are stacked in the order they were captured (by `DATE-OBS` / EXIF time, not by name), and new ones are picked up in any of the folders. A folder given twice, or inside another listed folder, counts once; one that can't be found is skipped with a warning |
 | `--interval N` | replay pacing, seconds per frame (default 2) |
 | `--limit N` | replay only the first N frames |
 | `--no-catch-up` | watch: ignore FITS already in the folder (default: stack them too, so a late start / restart doesn't lose subs) |

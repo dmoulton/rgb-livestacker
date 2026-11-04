@@ -26,7 +26,6 @@ SETTINGS = Path(__file__).resolve().parent.parent / "launcher-settings.json"
 
 DEFAULTS = {
     "mode": "watch",
-    "folder": "",
     "object_name": "",
     "object_auto": False,      # the name was filled in from the folder, not typed
     "interval": 2.0,
@@ -68,6 +67,36 @@ def parse_viewers(line: str) -> int | None:
         return None
 
 
+def _covers(outer: str, inner: str) -> bool:
+    """Is `inner` the same folder as `outer`, or inside it? (A watch already searches
+    subfolders, so listing both would only stack everything twice.)"""
+    try:
+        a, b = Path(outer).resolve(), Path(inner).resolve()
+    except OSError:
+        return False
+    return a == b or a in b.parents
+
+
+def add_folder(folders: list[str], new: str) -> tuple[list[str], str]:
+    """The folder list with `new` added, and a note for the user when that changed
+    more than the obvious: skipped because a listed folder already covers it, or
+    replacing listed folders that lie inside it."""
+    for f in folders:
+        if _covers(f, new):
+            return list(folders), f"Already covered by {f}."
+    inside = [f for f in folders if _covers(new, f)]
+    kept = [f for f in folders if f not in inside]
+    note = (f"Replaced {len(inside)} folder{'s' if len(inside) != 1 else ''} "
+            "that lie inside it." if inside else "")
+    return kept + [new], note
+
+
+def split_existing(folders: list[str]) -> tuple[list[str], list[str]]:
+    """(folders that exist, folders that don't)."""
+    ok = [f for f in folders if Path(f).is_dir()]
+    return ok, [f for f in folders if f not in ok]
+
+
 class Launcher:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -82,6 +111,7 @@ class Launcher:
         self.password = tk.StringVar()
         self.v = {k: tk.StringVar(value=str(v)) if not isinstance(v, bool)
                   else tk.BooleanVar(value=v) for k, v in DEFAULTS.items()}
+        self.folders: list[str] = []             # the capture folders (see _load)
         self._load()
 
         self._build()
@@ -112,13 +142,25 @@ class Launcher:
                         variable=self.v["mode"], command=self._sync).pack(side="left", padx=12)
         r += 1
 
-        ttk.Label(frm, text="Folder").grid(row=r, column=0, sticky="w", **pad)
-        folder_entry = ttk.Entry(frm, textvariable=self.v["folder"])
-        folder_entry.grid(row=r, column=1, sticky="ew", **pad)
-        folder_entry.bind("<FocusOut>", lambda _e: self._autofill_object())
-        folder_entry.bind("<Return>", lambda _e: self._autofill_object())
-        ttk.Button(frm, text="Browse…", command=lambda: self._pick_dir("folder")).grid(
-            row=r, column=2, sticky="w", **pad); r += 1
+        ttk.Label(frm, text="Folders").grid(row=r, column=0, sticky="nw", **pad)
+        box = ttk.Frame(frm)
+        box.grid(row=r, column=1, sticky="ew", **pad)
+        box.columnconfigure(0, weight=1)
+        self.folder_list = tk.Listbox(box, height=3, exportselection=False,
+                                      activestyle="none")
+        self.folder_list.grid(row=0, column=0, sticky="ew")
+        fsb = ttk.Scrollbar(box, command=self.folder_list.yview)
+        fsb.grid(row=0, column=1, sticky="ns")
+        self.folder_list["yscrollcommand"] = fsb.set
+        buttons = ttk.Frame(frm)
+        buttons.grid(row=r, column=2, sticky="nw", **pad)
+        ttk.Button(buttons, text="Add…", width=9, command=self._add_folder_dialog).pack()
+        ttk.Button(buttons, text="Remove", width=9, command=self._remove_folder).pack(pady=2)
+        r += 1
+        ttk.Label(frm, text="Subs from every folder are stacked in the order they were "
+                            "captured.", foreground="#888").grid(
+            row=r, column=1, columnspan=2, sticky="w", padx=8); r += 1
+        self._refresh_folders()
 
         ttk.Label(frm, text="Object name").grid(row=r, column=0, sticky="w", **pad)
         ttk.Entry(frm, textvariable=self.v["object_name"]).grid(
@@ -261,8 +303,28 @@ class Launcher:
                                     initialdir=self.v[key].get() or None)
         if d:
             self.v[key].set(d)
-            if key == "folder":
-                self._autofill_object()
+
+    def _refresh_folders(self) -> None:
+        self.folder_list.delete(0, "end")
+        for f in self.folders:
+            self.folder_list.insert("end", f)
+
+    def _add_folder_dialog(self) -> None:
+        d = filedialog.askdirectory(
+            title="Add a capture folder",
+            initialdir=(self.folders[-1] if self.folders else None))
+        if not d:
+            return
+        self.folders, note = add_folder(self.folders, d)
+        self._refresh_folders()
+        if note:
+            messagebox.showinfo("Livestacker", note)
+        self._autofill_object()
+
+    def _remove_folder(self) -> None:
+        for i in sorted(self.folder_list.curselection(), reverse=True):
+            del self.folders[i]
+        self._refresh_folders()
 
     def _object_edited(self, *_):
         if not self._filling:                  # the user typed: keep their text
@@ -273,14 +335,15 @@ class Launcher:
         has typed their own."""
         if self.v["object_name"].get().strip() and not self.v["object_auto"].get():
             return
-        folder = self.v["folder"].get().strip()
-        if not folder or not Path(folder).is_dir():
-            return
         from .fitsframe import guess_object     # (pulls in astropy: only when needed)
-        try:
-            guess = guess_object(folder)
-        except Exception:
-            return
+        guess = ""
+        for folder in split_existing(self.folders)[0]:       # the first folder that has one
+            try:
+                guess = guess_object(folder)
+            except Exception:
+                continue
+            if guess:
+                break
         if guess:
             self._filling = True
             try:
@@ -360,15 +423,42 @@ class Launcher:
                      + (" (full)" if full else ""),
                 foreground="#c80" if full else "#3a8")
 
+    def _same_target(self, folders: list[str]) -> bool:
+        """Everything is aligned to the first frame, so a folder of a different target
+        would only be rejected: say so before starting. True = go ahead."""
+        from .fitsframe import guess_object
+        names = {}
+        for f in folders:
+            try:
+                name = guess_object(f)
+            except Exception:
+                name = ""
+            if name:
+                names[f] = name
+        if len(set(names.values())) < 2:
+            return True
+        listing = "\n".join(f"{n}  —  {f}" for f, n in names.items())
+        return messagebox.askyesno(
+            "Livestacker", "These folders look like different targets:\n\n" + listing
+            + "\n\nEverything is aligned to the very first frame, so the other "
+              "target's subs would be rejected. Start anyway?")
+
     # -- run / stop -------------------------------------------------
 
     def _command(self) -> list[str] | None:
-        folder = self.v["folder"].get().strip()
-        if not folder or not Path(folder).is_dir():
-            messagebox.showerror("Livestacker", "Pick a folder that exists.")
+        folders, missing = split_existing(self.folders)
+        if not folders:
+            messagebox.showerror("Livestacker", "Add at least one folder that exists.")
+            return None
+        if missing and not messagebox.askokcancel(
+                "Livestacker", "These folders can't be found and will be skipped:\n\n"
+                + "\n".join(missing) + "\n\nStart with the others?"):
+            return None
+        if len(folders) > 1 and not self._same_target(folders):
             return None
         cmd = [sys.executable, "-m", "livestacker", "--exit-with-launcher", "-v"]
-        cmd += [f"--{self.v['mode'].get()}", folder]
+        for folder in folders:
+            cmd += [f"--{self.v['mode'].get()}", folder]
         if self.v["mode"].get() == "replay":
             cmd += ["--interval", self.v["interval"].get()]
         elif not self.v["catch_up"].get():
@@ -486,6 +576,10 @@ class Launcher:
         for k, var in self.v.items():
             if k in data:
                 var.set(data[k])
+        folders = data.get("folders")
+        if not isinstance(folders, list):                    # settings from before there were several
+            folders = [data["folder"]] if data.get("folder") else []
+        self.folders = [f for f in folders if isinstance(f, str) and f.strip()]
 
     def _save(self) -> None:
         data = {}
@@ -505,6 +599,8 @@ class Launcher:
                     data[k] = DEFAULTS[k]
             else:
                 data[k] = val
+        data["folders"] = list(self.folders)
+        data["folder"] = self.folders[0] if self.folders else ""     # (for an older launcher)
         try:
             SETTINGS.write_text(json.dumps(data, indent=2), encoding="utf-8")
         except OSError:
