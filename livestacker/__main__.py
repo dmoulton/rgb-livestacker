@@ -62,6 +62,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p.add_argument("--object-name", default="", metavar="NAME",
                    help="the target's name, shown on the web page")
+    p.add_argument("--osc-debayer", choices=("auto", "bilinear", "superpixel"),
+                   default="auto",
+                   help="colour-sensor (OSC) frames: bilinear = full resolution, "
+                        "superpixel = half resolution (faster, ~1/4 the memory), "
+                        "auto = full up to 12 MP, half above (default)")
     p.add_argument("--max-viewers", type=int, default=16, metavar="N",
                    help="most browsers connected at once (default 16, 1-500)")
     p.add_argument("--no-narrowband", action="store_true",
@@ -141,6 +146,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = StackConfig(
         narrowband_enabled=not args.no_narrowband,
+        osc_debayer=args.osc_debayer,
         object_name=args.object_name.strip()[:120],
         background_enabled=not args.no_background,
         auto_white_balance=not args.no_auto_wb,

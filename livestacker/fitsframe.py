@@ -10,6 +10,8 @@ from pathlib import Path
 import numpy as np
 from astropy.io import fits
 
+from .debayer import normalise_pattern, shift_pattern
+
 log = logging.getLogger("livestacker.fits")
 
 
@@ -25,6 +27,7 @@ class Frame:
     ccd_temp: float | None = None
     imagetyp: str = ""   # IMAGETYP keyword, e.g. "LIGHT" / "DARK" ("" if absent)
     object_name: str = ""  # OBJECT keyword: the target's name ("" if absent)
+    bayer: str | None = None  # colour sensor: the mosaic's 2x2 layout ("RGGB", ...); None = mono
 
 
 # Map common filter-name spellings onto single-letter RGB channels. Anything
@@ -61,6 +64,28 @@ def is_light(frame: Frame) -> bool:
     return not any(word in kind for word in _NOT_LIGHT)
 
 
+FITS_SUFFIXES = (".fits", ".fit", ".fts")
+RAW_SUFFIXES = (".cr2", ".cr3")
+FRAME_SUFFIXES = FITS_SUFFIXES + RAW_SUFFIXES      # everything the stacker can read
+
+
+def is_raw(path: str | Path) -> bool:
+    return Path(path).suffix.lower() in RAW_SUFFIXES
+
+
+def _bayer_of(header) -> str | None:
+    """The mosaic layout from BAYERPAT, moved by XBAYROFF / YBAYROFF if the file says
+    the pattern starts off the sensor's first pixel."""
+    pattern = normalise_pattern(str(header.get("BAYERPAT", "") or ""))
+    if pattern is None:
+        return None
+    try:
+        x, y = int(header.get("XBAYROFF", 0) or 0), int(header.get("YBAYROFF", 0) or 0)
+    except (TypeError, ValueError):
+        x = y = 0
+    return shift_pattern(pattern, x, y)
+
+
 def _image_hdu(hdul):
     return next((h for h in hdul if h.data is not None), None)
 
@@ -84,12 +109,17 @@ def _frame_from(path: Path, header, data: np.ndarray) -> Frame:
         ccd_temp=_num("CCD-TEMP"),
         imagetyp=str(header.get("IMAGETYP", "") or "").strip(),
         object_name=str(header.get("OBJECT", "") or "").strip(),
+        bayer=_bayer_of(header) if data.ndim == 2 else None,
     )
 
 
 def load_frame(path: str | Path) -> Frame:
-    """Read a FITS file into a `Frame`. Raises on unreadable / non-2D data."""
+    """Read a FITS (or Canon raw) file into a `Frame`. Raises on unreadable / non-2D
+    data. A colour-sensor frame comes back as its Bayer mosaic with `bayer` set."""
     path = Path(path)
+    if is_raw(path):
+        from .rawframe import load_raw
+        return load_raw(path)
     with fits.open(path, memmap=False) as hdul:
         hdu = _image_hdu(hdul)
         if hdu is None:
@@ -105,6 +135,9 @@ def read_header(path: str | Path) -> tuple[Frame, tuple[int, int]]:
     image shape, without reading the pixels — for deciding what to do with a
     folder of calibration frames before loading any of them."""
     path = Path(path)
+    if is_raw(path):
+        from .rawframe import read_raw_header
+        return read_raw_header(path)
     with fits.open(path, memmap=False) as hdul:
         hdu = _image_hdu(hdul)
         if hdu is None:
@@ -125,6 +158,8 @@ def median_combine(paths: list[Path], strip_rows: int = 128) -> np.ndarray:
         raise ValueError("frames differ in size: "
                          + ", ".join(f"{s[1]}x{s[0]}" for s in sorted(shapes)))
     h, w = shapes.pop()
+    if any(is_raw(p) for p in paths):
+        return _median_combine_raw(paths, (h, w), strip_rows)
     out = np.empty((h, w), np.float32)
     for r0 in range(0, h, strip_rows):
         r1 = min(h, r0 + strip_rows)
@@ -156,3 +191,23 @@ def guess_object(folder: str | Path, max_files: int = 60) -> str:
             if is_light(frame) and frame.object_name:
                 return frame.object_name
     return ""
+
+
+def _median_combine_raw(paths: list[Path], shape: tuple[int, int],
+                        strip_rows: int) -> np.ndarray:
+    """`median_combine` for raw files, which can only be decoded whole: decode each
+    one once into a scratch file on disk, then take the median strip by strip, so
+    30 darks of a 24 MP sensor need disk space (~3 GB) rather than that much RAM."""
+    import tempfile
+    h, w = shape
+    out = np.empty((h, w), np.float32)
+    with tempfile.TemporaryDirectory(prefix="livestacker-") as tmp:
+        stack = np.memmap(Path(tmp) / "frames.f32", dtype=np.float32, mode="w+",
+                          shape=(len(paths), h, w))
+        for i, p in enumerate(paths):
+            stack[i] = load_frame(p).data
+        for r0 in range(0, h, strip_rows):
+            r1 = min(h, r0 + strip_rows)
+            out[r0:r1] = np.median(stack[:, r0:r1], axis=0)
+        del stack
+    return out

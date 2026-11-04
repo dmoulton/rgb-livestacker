@@ -21,6 +21,7 @@ from PIL import Image
 from .accumulator import ChannelStack
 from .calibration import Calibrator
 from .config import RGB_FILTERS, StackConfig, StretchParams
+from .debayer import choose_method, debayer
 from .fitsframe import NARROWBAND_FILTERS, Frame, is_light
 from .processing import (
     SceneModeler, add_ha, apply_luminance, apply_stretch, auto_stretch, combine,
@@ -85,24 +86,29 @@ class Pipeline:
         self._lock = threading.Lock()
         self.started_at = time.time()
         self.rejected = 0
+        self._osc_logged = False
+        self.accepted = 0              # subs stacked (an OSC sub feeds three channels)
 
     # -- ingestion ---------------------------------------------------------
 
-    def _register(self, data: np.ndarray):
-        """Align `data` to the reference. `astroalign`'s triangle matching is
+    def _register(self, finder: np.ndarray, planes: dict[str, np.ndarray]):
+        """Align `planes` to the reference, finding the transform from `finder` (the
+        image the stars are detected in: the plane itself for a mono frame, the
+        colour-average for an OSC one). `astroalign`'s triangle matching is
         rotation-invariant, so a meridian flip needs nothing special — but a
         thin-cloud / soft-focus frame can still starve the star detector, so
         drop the detection threshold and retry before giving up. The reference's
-        stars are detected once (when it is adopted), not for every sub."""
+        stars are detected once (when it is adopted), not for every sub.
+        Returns ({name: aligned plane}, None) or (None, the error)."""
         last = None
         for det_sigma in (5, 3, 2):
             try:
                 transform, _ = aa.find_transform(
-                    data, self._ref_stars, max_control_points=MAX_CONTROL_POINTS,
+                    finder, self._ref_stars, max_control_points=MAX_CONTROL_POINTS,
                     detection_sigma=det_sigma)
-                registered, _ = aa.apply_transform(
-                    transform, data, self.reference, fill_value=np.nan)
-                return registered, None
+                return {name: aa.apply_transform(transform, img, self.reference,
+                                                 fill_value=np.nan)[0]
+                        for name, img in planes.items()}, None
             except Exception as exc:  # too few stars, no transform, etc.
                 last = exc
         return None, last
@@ -131,7 +137,24 @@ class Pipeline:
                                 "skipped: narrowband is switched off", skipped=True)
 
         data = self.calibrator.apply(frame) if self.calibrator else frame.data
-        data = self._crop_edges(data)
+        if frame.bayer:
+            # colour sensor: calibrated as a mosaic, now split into R, G, B planes
+            # (each then stacked as its own channel) and registered on their average
+            method = choose_method(self.cfg.osc_debayer, data.shape)
+            if not self._osc_logged:
+                self._osc_logged = True
+                log.info("colour sensor (%s, %dx%d): debayering %s", frame.bayer,
+                         data.shape[1], data.shape[0],
+                         "at full resolution" if method == "bilinear"
+                         else "at half resolution (superpixel)")
+            cube = debayer(data, frame.bayer, method)
+            planes = {name: self._crop_edges(cube[i]) for i, name in enumerate("RGB")}
+            data = (planes["R"] + planes["G"] + planes["B"]) / 3.0
+            label = "RGB"
+        else:
+            data = self._crop_edges(data)
+            planes = {frame.filter: data}
+            label = frame.filter
 
         if self.reference is None:
             # Every later frame is aligned to this one, so don't adopt a frame
@@ -140,35 +163,36 @@ class Pipeline:
             if len(stars) < self.cfg.min_reference_stars:
                 self.rejected += 1
                 return IngestResult(
-                    False, frame.filter, frame.path.name,
+                    False, label, frame.path.name,
                     f"unusable as the reference: only {len(stars)} stars "
                     f"(need {self.cfg.min_reference_stars})")
             self._ref_stars = stars[:MAX_CONTROL_POINTS]
             self.reference = data.copy()
-            self.reference_filter = frame.filter
+            self.reference_filter = label
             self.reference_path = frame.path.name
-            aligned, valid = data, np.ones(data.shape, bool)
-            log.info("reference set from %s (%s)", frame.path.name, frame.filter)
+            aligned, valid = planes, np.ones(data.shape, bool)
+            log.info("reference set from %s (%s)", frame.path.name, label)
         else:
-            aligned, exc = self._register(data)
+            aligned, exc = self._register(data, planes)
             if aligned is None:
                 self.rejected += 1
-                return IngestResult(False, frame.filter, frame.path.name,
+                return IngestResult(False, label, frame.path.name,
                                     f"registration failed: {exc}")
-            valid = np.isfinite(aligned)
+            valid = np.isfinite(next(iter(aligned.values())))
             frac = float(valid.mean())
             if frac < self.cfg.min_valid_fraction:
                 self.rejected += 1
-                return IngestResult(False, frame.filter, frame.path.name,
+                return IngestResult(False, label, frame.path.name,
                                     f"low overlap ({frac:.0%})", frac)
 
-        ch = self.channels.setdefault(
-            frame.filter, ChannelStack(frame.filter, self.cfg))
-        ch.add(aligned, valid)
-        ch.last_path = frame.path.name
+        for name, img in aligned.items():
+            ch = self.channels.setdefault(name, ChannelStack(name, self.cfg))
+            ch.add(img, valid)
+            ch.last_path = frame.path.name
+        self.accepted += 1
         if recombine:
             self.recombine()
-        return IngestResult(True, frame.filter, frame.path.name,
+        return IngestResult(True, label, frame.path.name,
                             valid_fraction=float(valid.mean()))
 
     def recombine(self) -> None:
@@ -264,7 +288,7 @@ class Pipeline:
             }
             for name in names
         }
-        total = sum(st.frames for st in self.channels.values())
+        total = self.accepted          # (not the channel sum: an OSC sub feeds three)
         cal = self.calibrator
         bias = _public_name(cal.master_bias.source) if cal and cal.master_bias else None
         dark = _public_name(cal.master_dark.source) if cal and cal.master_dark else None

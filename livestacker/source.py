@@ -16,13 +16,14 @@ from typing import Callable
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-log = logging.getLogger("livestacker.source")
+from .fitsframe import FRAME_SUFFIXES
 
-FITS_SUFFIXES = (".fits", ".fit", ".fts")
+log = logging.getLogger("livestacker.source")
 
 
 def _is_fits(path: Path) -> bool:
-    return path.suffix.lower() in FITS_SUFFIXES
+    """A file the stacker can read: FITS, or a Canon raw (CR2 / CR3)."""
+    return path.suffix.lower() in FRAME_SUFFIXES
 
 
 def _wait_until_stable(path: Path, timeout: float = 30.0, settle: float = 1.0) -> bool:

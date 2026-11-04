@@ -50,6 +50,7 @@ DEFAULTS = {
     "ws_port": 8081,
     "open_browser": True,
     "max_viewers": 16,
+    "osc_debayer": "auto",
 }
 
 
@@ -189,6 +190,14 @@ class Launcher:
                            ("background", "Background removal"), ("auto_wb", "Auto white balance"),
                            ("narrowband", "Narrowband")):
             ttk.Checkbutton(opts, text=label, variable=self.v[key]).pack(side="left", padx=(0, 12))
+
+        osc = ttk.Frame(frm)
+        osc.grid(row=r, column=0, columnspan=3, sticky="w", **pad); r += 1
+        ttk.Label(osc, text="Colour camera (OSC) resolution").pack(side="left")
+        ttk.Combobox(osc, textvariable=self.v["osc_debayer"], width=11, state="readonly",
+                     values=("auto", "full", "half")).pack(side="left", padx=8)
+        ttk.Label(osc, text="auto = full up to 12 MP; half is faster and uses ¼ the memory",
+                  foreground="#888").pack(side="left")
 
         pw = ttk.Frame(frm)
         pw.grid(row=r, column=0, columnspan=3, sticky="ew", **pad); r += 1
@@ -364,6 +373,8 @@ class Launcher:
             cmd += ["--interval", self.v["interval"].get()]
         elif not self.v["catch_up"].get():
             cmd.append("--no-catch-up")
+        osc = {"full": "bilinear", "half": "superpixel"}.get(self.v["osc_debayer"].get(), "auto")
+        cmd += ["--osc-debayer", osc]
         limit = self._limit()
         if limit is None:
             messagebox.showerror("Livestacker", "Max browsers must be a number from 1 to 500.")

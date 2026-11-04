@@ -91,6 +91,11 @@ class StackConfig:
     # Stack narrowband (H / O / S) subs along with the broadband ones. Off: they
     # are skipped on arrival, so a mixed capture folder gives a plain RGB(+L) stack.
     narrowband_enabled: bool = True
+    # Colour-sensor (OSC) frames: how the Bayer mosaic becomes R, G, B planes.
+    # "bilinear" = full resolution; "superpixel" = half resolution, no interpolation,
+    # about a quarter of the memory and much faster; "auto" = full resolution up to
+    # 12 MP, half above (so a 24 MP DSLR stays quick and fits in memory).
+    osc_debayer: str = "auto"
     # Free-text name of what is being imaged, shown on the web page.
     object_name: str = ""
 

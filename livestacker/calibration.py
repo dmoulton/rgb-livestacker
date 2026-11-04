@@ -18,12 +18,13 @@ from pathlib import Path
 import numpy as np
 from scipy.ndimage import median_filter
 
+from .debayer import bayer_planes
 from .fitsframe import Frame, load_frame, median_combine, read_header
 from .config import StackConfig
 
 log = logging.getLogger("livestacker.calibration")
 
-FITS_SUFFIXES = (".fits", ".fit", ".fts")
+from .fitsframe import FRAME_SUFFIXES as FITS_SUFFIXES   # FITS and Canon raw: both can be calibration frames
 
 
 def cosmetic_correct(data: np.ndarray, sigma: float = 8.0) -> np.ndarray:
@@ -45,6 +46,17 @@ def cosmetic_correct(data: np.ndarray, sigma: float = 8.0) -> np.ndarray:
         return data
     out = data.copy()
     out[outlier] = med[outlier]
+    return out
+
+
+def cosmetic_correct_bayer(data: np.ndarray, sigma: float = 8.0) -> np.ndarray:
+    """`cosmetic_correct` for a colour-sensor mosaic. Next to a pixel in a Bayer
+    mosaic sit pixels of *other* colours, so a plain 3x3 median would pull a hot
+    pixel toward the wrong colour (and flag every bright-colour pixel as an
+    outlier); each of the four same-colour sub-planes is cleaned on its own."""
+    out = data.copy()
+    for plane in bayer_planes(out):
+        plane[...] = cosmetic_correct(plane, sigma)
     return out
 
 
@@ -153,15 +165,24 @@ class MasterFlat:
     it corrects vignetting and dust shadows without changing the signal scale.
     """
 
-    def __init__(self, data: np.ndarray, meta: dict, source: str):
-        norm = float(np.median(data)) or 1.0
-        flat = (data / norm).astype(np.float32)
+    def __init__(self, data: np.ndarray, meta: dict, source: str,
+                 bayer: str | None = None):
+        flat = data.astype(np.float32)
+        if bayer:
+            # a colour sensor's flat is a mosaic whose colours sit at different
+            # levels: normalise each of the four sub-planes on its own, so the
+            # flat corrects vignetting and dust and leaves the colour balance alone
+            for plane in bayer_planes(flat):
+                plane /= float(np.median(plane)) or 1.0
+        else:
+            flat /= float(np.median(flat)) or 1.0
         # guard against blow-ups where the flat is near zero (heavy vignette
         # corners, dead pixels)
         flat[flat < 0.2] = 1.0
         self.data = flat
         self.meta = meta
         self.source = source
+        self.bayer = bayer
 
     def warnings_for(self, frame: Frame) -> list[str]:
         w: list[str] = []
@@ -206,7 +227,8 @@ def build_flats(path: str | Path,
             data = data - bias.data
             debiased = True
         out[filt] = MasterFlat(data, _meta(frames[0]),
-                               f"{path} ({filt}, {len(frames)} frames)")
+                               f"{path} ({filt}, {len(frames)} frames)",
+                               bayer=frames[0].bayer)
         log.info("master flat [%s]: median of %d frames  %s%s",
                  filt, len(frames), _describe(_meta(frames[0])),
                  "  (bias-subtracted)" if debiased else "")
@@ -284,5 +306,6 @@ class Calibrator:
             self._flat_warned.add(frame.filter)
 
         if self.cfg.hot_pixel_enabled:
-            data = cosmetic_correct(data, self.cfg.hot_pixel_sigma)
+            fix = cosmetic_correct_bayer if frame.bayer else cosmetic_correct
+            data = fix(data, self.cfg.hot_pixel_sigma)
         return data

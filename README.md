@@ -114,6 +114,7 @@ The launcher shows, beside Start / Stop, how many browsers are connected right n
 | `--sigma-clip-kappa N` | sigma-clip rejection threshold (default 3.0) |
 | `--max-viewers N` | most browsers connected at once (default 16, 1-500). The launcher's *Max browsers* box can change it live; more viewers means more upload bandwidth and a bigger share of the CPU |
 | `--object-name NAME` | the target's name, shown at the top of the web page and in the tab title (default: the `OBJECT` header of the first light frame; the launcher fills its box from the folder, and anything you type there wins) |
+| `--osc-debayer auto\|bilinear\|superpixel` | colour cameras: full resolution, half resolution (faster, ~1/4 the memory), or auto (full up to 12 MP) |
 | `--no-narrowband` | ignore narrowband (H / O / S) subs — skipped on arrival, so the stack is RGB (+L) only |
 | `--no-background` | disable gradient/background subtraction |
 | `--no-auto-wb` | disable automatic per-channel white balance |
@@ -121,6 +122,32 @@ The launcher shows, beside Start / Stop, how many browsers are connected right n
 | `--crop-top/-bottom/-left/-right N` | trim N rows/columns off every raw frame (a permanently bad sensor edge) |
 | `--preview-px N` | longest preview edge sent to the browser (default 1600); a browser zoomed in past that is sent the full-size image |
 | `-v` | verbose logging |
+
+### Colour cameras (OSC)
+
+A one-shot-colour camera works as well as a mono one with filters: point the
+stacker at a folder of **Canon raw (`.cr2`, `.cr3`)** or **Bayer FITS** subs (any
+FITS with a `BAYERPAT` keyword: ZWO, QHY, Seestar S50, NINA-saved colour frames ...)
+and it stacks them as red, green and blue channels, with the same alignment,
+background removal, colour balance and stretch as everything else. Canon files
+need the `rawpy` package (it is in `requirements.txt`; re-run `install.sh` /
+`install.bat` after updating). They are read as linear data with no camera white
+balance, gamma or brightness applied; exposure, ISO and time come from the EXIF.
+
+- Dark, flat and bias frames (`--dark`, `--flat`, `--bias`) can be raw or FITS and
+  are applied to the raw mosaic *before* debayering. A colour flat is normalised
+  per colour, so it fixes vignetting and dust shadows without changing the colour
+  balance. Hot pixels are cleaned per colour too.
+- **Resolution.** `--osc-debayer bilinear` keeps full resolution; `superpixel`
+  turns each 2x2 tile into one true-colour pixel (half the width and height, no
+  interpolation, about a quarter of the memory and much faster); the default
+  `auto` is full up to 12 MP and half above that. Measured on 24 MP Canon frames
+  (6024 x 4022): half resolution takes ~3 s a sub and ~1.6 GB; full resolution
+  ~5 s and ~5.6 GB. The launcher's *Colour camera (OSC) resolution* box sets it.
+  The crop-edge options count pixels *after* this step.
+- Raw files carry no `IMAGETYP`, so calibration frames are recognised by name: a
+  file in a folder named `DARK` / `FLAT` / `BIAS` / `OFFSET` / `SNAPSHOT`, or a file
+  name starting with `dark_` / `flat_` / `bias_`, is not stacked as a light.
 
 ## How it works
 
