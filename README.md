@@ -50,6 +50,11 @@ Before starting it warns if a folder is missing, or if the folders look like dif
 targets (everything is aligned to the very first frame, so another target's subs
 would be rejected). The list is chosen at start; changing it means restarting.
 
+The **Source** and **Calibration** sections fold away when you click their heading
+(▾ / ▸), which gives the log area their space; a folded section shows a one-line
+summary ("watching 2 folders · M27", "dark · flat"). Which sections are folded is
+remembered.
+
 Then open <http://localhost:8080/>. The page's live connection runs over that same
 port (`/ws`), so it also works through a tunnel or reverse proxy that forwards only
 the web port (e.g. `ssh -R 80:localhost:8080 localhost.run`). Note there is no

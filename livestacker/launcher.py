@@ -50,6 +50,8 @@ DEFAULTS = {
     "open_browser": True,
     "max_viewers": 16,
     "osc_debayer": "auto",
+    "source_open": True,       # whether the Source section is expanded
+    "calibration_open": True,  # ... and the Calibration section
 }
 
 
@@ -112,6 +114,9 @@ class Launcher:
         self.v = {k: tk.StringVar(value=str(v)) if not isinstance(v, bool)
                   else tk.BooleanVar(value=v) for k, v in DEFAULTS.items()}
         self.folders: list[str] = []             # the capture folders (see _load)
+        self._section_rows: dict[str, tuple[int, int]] = {}   # collapsible: key -> grid rows
+        self._hidden: dict[str, list] = {}                    # key -> widgets while collapsed
+        self._section_ui: dict[str, tuple] = {}               # key -> (title, arrow label, summary label)
         self._load()
 
         self._build()
@@ -131,8 +136,8 @@ class Launcher:
         frm.columnconfigure(1, weight=1)
         r = 0
 
-        ttk.Label(frm, text="Source", font=("", 12, "bold")).grid(
-            row=r, column=0, columnspan=3, sticky="w", pady=(0, 4)); r += 1
+        self._section_header(frm, r, "Source", "source"); r += 1
+        src_first = r
 
         mode = ttk.Frame(frm)
         mode.grid(row=r, column=0, columnspan=3, sticky="w", **pad)
@@ -185,11 +190,12 @@ class Launcher:
                         text="Also stack subs already in the folder "
                              "(covers a late start / restart)").pack(side="left")
         r += 1
+        self._section_rows["source"] = (src_first, r)
 
         ttk.Separator(frm, orient="horizontal").grid(
             row=r, column=0, columnspan=3, sticky="ew", pady=8); r += 1
-        ttk.Label(frm, text="Calibration (optional)", font=("", 12, "bold")).grid(
-            row=r, column=0, columnspan=3, sticky="w", pady=(0, 4)); r += 1
+        self._section_header(frm, r, "Calibration (optional)", "calibration"); r += 1
+        cal_first = r
 
         cal_rows = (
             ("bias", "Master bias", "a folder of bias subs, or one master FITS — also subtracted from the dark and flats"),
@@ -222,6 +228,7 @@ class Launcher:
         ttk.Label(frm, text="px trimmed off every raw frame (a bad sensor edge)",
                   foreground="#888").grid(row=r, column=1, columnspan=2,
                                           sticky="w", padx=8); r += 1
+        self._section_rows["calibration"] = (cal_first, r)
 
         ttk.Separator(frm, orient="horizontal").grid(
             row=r, column=0, columnspan=3, sticky="ew", pady=8); r += 1
@@ -284,10 +291,70 @@ class Launcher:
         self.log["yscrollcommand"] = sb.set
 
         self._sync()
-        # open wide enough that the path boxes have room (they stretch with the window)
+        # open wide enough that the path boxes have room (they stretch with the window),
+        # and tall enough for everything *expanded*: a section left collapsed from last
+        # time then gives its space to the log, rather than shrinking the window
         self.root.update_idletasks()
         self.root.geometry(f"{max(self.root.winfo_reqwidth(), 960)}x"
                            f"{self.root.winfo_reqheight()}")
+        for key in self._section_rows:
+            if not self.v[f"{key}_open"].get():
+                self._set_open(key, False)
+
+    # -- collapsible sections -----------------------------------------
+
+    def _section_header(self, frm: ttk.Frame, row: int, title: str, key: str) -> None:
+        """A clickable heading: '▾ Source' (open) / '▸ Source  summary' (collapsed)."""
+        hdr = ttk.Frame(frm)
+        hdr.grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, 4))
+        label = ttk.Label(hdr, font=("", 12, "bold"), cursor="hand2")
+        label.pack(side="left")
+        summary = ttk.Label(hdr, foreground="#888", cursor="hand2")
+        summary.pack(side="left", padx=10)
+        self._section_ui[key] = (title, label, summary)
+        for w in (hdr, label, summary):
+            w.bind("<Button-1>", lambda _e, k=key: self._toggle_section(k))
+        label.configure(text=f"▾ {title}")
+
+    def _toggle_section(self, key: str) -> None:
+        self._set_open(key, not self.v[f"{key}_open"].get())
+
+    def _set_open(self, key: str, opened: bool) -> None:
+        """Show or hide a section's rows. The window keeps its size, so the log row
+        (the only one that stretches) takes up the freed space, and gives it back."""
+        self.v[f"{key}_open"].set(opened)
+        if opened:
+            for w in self._hidden.pop(key, []):          # (a hidden widget is no longer
+                w.grid()                                  #  in the grid's list: keep our own)
+        elif key not in self._hidden:
+            first, last = self._section_rows[key]
+            frm = self._section_ui[key][1].master.master
+            hide = [w for w in frm.grid_slaves() if first <= int(w.grid_info()["row"]) < last]
+            for w in hide:
+                w.grid_remove()
+            self._hidden[key] = hide
+        title, label, summary = self._section_ui[key]
+        label.configure(text=f"{'▾' if opened else '▸'} {title}")
+        summary.configure(text="" if opened else self._summary(key))
+
+    def _summary(self, key: str) -> str:
+        """What a collapsed section would have shown, in a few words."""
+        if key == "source":
+            n = len(self.folders)
+            what = "replaying" if self.v["mode"].get() == "replay" else "watching"
+            text = f"{what} {n} folder{'s' if n != 1 else ''}" if n else "no folder chosen"
+            name = self.v["object_name"].get().strip()
+            return f"{text}  ·  {name}" if name else text
+        parts = [label for k, label in (("bias", "bias"), ("dark", "dark"), ("flat", "flat"))
+                 if self.v[k].get().strip()]
+        def trimmed(edge: str) -> bool:
+            try:
+                return float(self.v[f"crop_{edge}"].get() or 0) > 0
+            except ValueError:
+                return False
+        if any(trimmed(e) for e in ("top", "bottom", "left", "right")):
+            parts.append("edge crop")
+        return "  ·  ".join(parts) if parts else "none"
 
     # -- helpers ------------------------------------------------------
 
