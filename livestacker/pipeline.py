@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import io
 import logging
-import re
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -19,7 +18,7 @@ import sep
 from PIL import Image
 
 from .accumulator import ChannelStack
-from .calibration import Calibrator
+from .calibration import Calibrator, _name as _public_name
 from .config import RGB_FILTERS, StackConfig, StretchParams
 from .debayer import choose_method, debayer
 from .fitsframe import NARROWBAND_FILTERS, Frame, is_light
@@ -34,15 +33,6 @@ log = logging.getLogger("livestacker.pipeline")
 aa.MIN_MATCHES_FRACTION = 0.6
 aa.PIXEL_TOL = 2
 MAX_CONTROL_POINTS = 50        # stars (brightest first) used to find the transform
-
-
-def _public_name(label: str) -> str:
-    """A calibration source label ("/home/me/darks (12 frames)") reduced to the last
-    folder / file name ("darks (12 frames)"): what the browser is shown shouldn't
-    carry the machine's directory layout or user name."""
-    m = re.match(r"^(.*?)( \(\d+ frames\))?$", label)
-    base = re.split(r"[\\/]", m.group(1).rstrip("\\/"))[-1]
-    return base + (m.group(2) or "")
 
 
 def detect_stars(data: np.ndarray, detection_sigma: float = 5.0) -> np.ndarray:
@@ -294,8 +284,16 @@ class Pipeline:
         }
         total = self.accepted          # (not the channel sum: an OSC sub feeds three)
         cal = self.calibrator
-        bias = _public_name(cal.master_bias.source) if cal and cal.master_bias else None
-        dark = _public_name(cal.master_dark.source) if cal and cal.master_dark else None
+        # what the latest light actually got (before any light: what was loaded)
+        def shown(kind, master):
+            if cal is None or master is None:
+                return None
+            if kind not in cal.applied:
+                return _public_name(master.source)
+            used = cal.applied[kind]
+            return "not applied" if used is None else _public_name(used)
+        bias = shown("bias", cal.master_bias if cal else None)
+        dark = shown("dark", cal.master_dark if cal else None)
         flats = sorted(cal.flats) if cal and cal.flats else []
         return {
             "type": "status",
@@ -309,6 +307,7 @@ class Pipeline:
                 "bias": bias,
                 "dark": dark,
                 "flats": flats,
+                "warnings": list(cal.problems) if cal else [],
                 "background": self.cfg.background_enabled,
                 "white_balance": (self._scene.wb_method
                                   if self.cfg.auto_white_balance else "off"),

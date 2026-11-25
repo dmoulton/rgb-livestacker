@@ -116,8 +116,8 @@ The launcher shows, beside Start / Stop, how many browsers are connected right n
 | `--no-catch-up` | watch: ignore FITS already in the folder (default: stack them too, so a late start / restart doesn't lose subs) |
 | `--host 0.0.0.0` | expose to the LAN (default: localhost only) |
 | `--web-port` / `--ws-port` | ports (default 8080 / 8081) |
-| `--bias PATH` | master bias: a FITS file, or a folder of bias subs (also subtracted from the dark and flats) |
-| `--dark PATH` | master dark: a FITS file, or a folder of dark subs to median-combine |
+| `--bias PATH` | master bias: a FITS file, a folder of bias subs, or a folder of masters for several settings (also used on the dark and flats) |
+| `--dark PATH` | master dark: a FITS file, a folder of dark subs to median-combine, or a **library** folder of masters for several settings |
 | `--flat PATH` | master flat(s): a FITS file, or a folder of raw flats (grouped by `FILTER`, one master per filter) |
 | `--no-hot-pixel` | disable per-frame hot/cold pixel correction (on by default) |
 | `--hot-pixel-sigma N` | hot-pixel detection threshold, robust sigma (default 8) |
@@ -165,10 +165,22 @@ balance, gamma or brightness applied; exposure, ISO and time come from the EXIF.
 1. **Watch / replay** the folder; wait for each FITS file to finish writing.
 2. **Calibrate**, per light frame:
    - master-bias subtraction (`--bias`); when given, the dark master and the
-     flats are bias-subtracted too, so an exposure-scaled dark is exact rather
-     than approximate;
+     flats are bias-subtracted too, so an exposure-scaled dark is exact;
    - master-dark subtraction (`--dark`), validated against the light's
-     exposure / gain / binning / temperature, with warnings on a mismatch;
+     exposure / gain / offset / binning / temperature, with warnings on a
+     mismatch. A dark that still contains the camera's baseline is only scaled to
+     another exposure when a bias separates the two;
+   - **libraries:** point `--dark` (or `--bias`) at a folder holding masters for
+     several settings and the one matching each sub is picked: same size, gain,
+     offset and binning, then the nearest exposure and temperature. Files are only
+     median-combined with others of the *same* settings. If nothing matches,
+     nothing is applied, and it says so;
+   - masters saved on a **0 to 1 scale** (Siril, PixInsight) are converted to
+     camera counts. A dark whose baseline has **already been removed** (it sits
+     near zero) is recognised, so the bias isn't taken off it twice; it needs the
+     matching bias to remove the baseline from the lights;
+   - anything wrong with calibration (skipped, mismatched) is shown in an amber
+     box at the top of the web page and highlighted in the launcher's log;
    - flat-field division (`--flat`), one master flat per `FILTER`, applied to
      the matching channel (warns + skips on a shape mismatch);
    - a per-frame hot/cold pixel cosmetic correction — needs no calibration
@@ -178,11 +190,18 @@ balance, gamma or brightness applied; exposure, ISO and time come from the EXIF.
 4. **Register** every frame — any filter — to the first frame received, with
    `astroalign` (triangle star matching, no plate solve). This is what keeps
    the independently-growing channel stacks from drifting apart.
-5. **Stack**: per-pixel running mean (Welford) with a rolling sigma-clip — an
+5. **Stack**: each sub's sky is first brought to the stack's level (it drifts over
+   a night; left in, the drift blunts rejection and leaves steps at dithered
+   edges). Then a per-pixel running mean (Welford) with a rolling sigma-clip — an
    incoming value more than `kappa` sigma from the running mean is dropped for
    that pixel, rejecting satellite / aircraft trails and cosmics that land in a
-   single frame. Only normally-quiet (sky) pixels are eligible, so the clip
-   never eats a star PSF that legitimately swings frame to frame. Per-pixel
+   single frame. That test can't judge a filter's first few subs, so each pixel
+   also remembers its highest sample and takes it back out ("look-back") wherever
+   it stands more than `kappa + 1` sigma from all the others: a trail in any sub,
+   the first included, fades once the filter has 4 subs and is gone by about 6.
+   (One outlier per pixel: where two trails cross in different subs, one stays.)
+   Only normally-quiet (sky) pixels are eligible for either test, so they never
+   eat a star PSF that legitimately swings frame to frame. Per-pixel
    coverage is tracked so partially-overlapping (dithered / flipped) frames
    still contribute; the combined result is cropped to the region every channel
    covers *by a healthy fraction of its frames*, so the ragged dither border —

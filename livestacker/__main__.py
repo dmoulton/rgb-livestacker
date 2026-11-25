@@ -14,7 +14,7 @@ import os
 import sys
 import threading
 
-from .calibration import Calibrator, MasterBias, MasterDark, build_flats
+from .calibration import Calibrator, build_flats, load_bias, load_dark
 from .config import StackConfig
 from .server import LiveStacker
 from .source import ReplaySource, WatchSource
@@ -167,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
     master_bias = None
     if args.bias:
         try:
-            master_bias = MasterBias.build(args.bias)
+            master_bias = load_bias(args.bias)
         except (OSError, ValueError) as exc:
             print(f"error: --bias {exc}", file=sys.stderr)
             return 2
@@ -175,7 +175,7 @@ def main(argv: list[str] | None = None) -> int:
     master_dark = None
     if args.dark:
         try:
-            master_dark = MasterDark.build(args.dark, master_bias)
+            master_dark = load_dark(args.dark, master_bias)
         except (OSError, ValueError) as exc:
             print(f"error: --dark {exc}", file=sys.stderr)
             return 2

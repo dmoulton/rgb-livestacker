@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import collections
 import logging
+import re
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +26,7 @@ from .config import StackConfig
 log = logging.getLogger("livestacker.calibration")
 
 from .fitsframe import FRAME_SUFFIXES as FITS_SUFFIXES   # FITS and Canon raw: both can be calibration frames
+from .fitsframe import RAW_SUFFIXES
 
 
 def cosmetic_correct(data: np.ndarray, sigma: float = 8.0) -> np.ndarray:
@@ -60,18 +62,55 @@ def cosmetic_correct_bayer(data: np.ndarray, sigma: float = 8.0) -> np.ndarray:
     return out
 
 
+FULL_SCALE = 65535.0           # 16-bit camera counts
+# With no bias to compare against, a dark whose typical value is under this is
+# taken to have had its baseline removed: cameras' baselines are higher than this,
+# and the dark current of a cooled sensor is lower.
+BASELINE_FLOOR = 64.0
+
+
+def _is_unit_scaled(data: np.ndarray) -> bool:
+    """Siril, PixInsight and others save masters as 0..1 floating point, 1.0
+    meaning the camera's full scale. Camera counts never all sit below 1."""
+    top = float(np.nanmax(data)) if data.size else 0.0
+    return 0.0 < top <= 1.0001
+
+
+def _to_counts(data: np.ndarray, label: str) -> np.ndarray:
+    """Bring a 0..1 master onto the lights' scale (camera counts), else as is."""
+    if not _is_unit_scaled(data):
+        return data
+    log.info("%s is saved on a 0..1 scale: converted to camera counts", label)
+    return (data * FULL_SCALE).astype(np.float32)
+
+
+def _combine_files(files: list[Path], label: str) -> tuple[np.ndarray, dict]:
+    data = load_frame(files[0]).data if len(files) == 1 else median_combine(files)
+    return _to_counts(data, label), _meta(read_header(files[0])[0])
+
+
+def _frames_under(path: Path) -> list[Path]:
+    files = sorted(p for p in path.rglob("*") if p.suffix.lower() in FITS_SUFFIXES)
+    if not files:
+        raise FileNotFoundError(f"no FITS files under {path}")
+    return files
+
+
 def _combine(path: str | Path) -> tuple[np.ndarray, dict, str]:
     """Median-combine every FITS under `path` (or load it, if it's one file).
-    Returns (data, meta-from-first-frame, human label)."""
+    Returns (data in camera counts, meta-from-first-frame, human label)."""
     path = Path(path)
     if path.is_dir():
-        files = sorted(p for p in path.rglob("*") if p.suffix.lower() in FITS_SUFFIXES)
-        if not files:
-            raise FileNotFoundError(f"no FITS files under {path}")
-        data = median_combine(files)
-        return data, _meta(read_header(files[0])[0]), f"{path} ({len(files)} frames)"
-    frame = load_frame(path)
-    return frame.data, _meta(frame), str(path)
+        files = _frames_under(path)
+        data, meta = _combine_files(files, str(path))
+        return data, meta, f"{path} ({len(files)} frames)"
+    data, meta = _combine_files([path], str(path))
+    return data, meta, str(path)
+
+
+def _differs(a, b) -> bool:
+    """Two header values that are both known and not the same."""
+    return a is not None and b is not None and a != b
 
 
 class MasterBias:
@@ -81,6 +120,7 @@ class MasterBias:
         self.data = data.astype(np.float32)
         self.meta = meta
         self.source = source
+        self.level = float(np.median(self.data[::4, ::4]))
 
     @classmethod
     def build(cls, path: str | Path) -> "MasterBias":
@@ -88,19 +128,19 @@ class MasterBias:
         log.info("master bias: %s  %s", label, _describe(meta))
         return cls(data, meta, label)
 
+    def for_frame(self, frame: Frame, shape=None) -> tuple["MasterBias | None", list[str]]:
+        """(this bias if it can be used on `frame`, what's wrong with it)."""
+        shape = shape or frame.data.shape
+        if self.data.shape != shape:
+            return None, [f"{_name(self.source)} is {_size(self.data.shape)} but the lights "
+                          f"are {_size(shape)}: NOT applied"]
+        lm = _meta(frame)
+        notes = [f"{k} {self.meta[k]} != light {lm[k]}"
+                 for k in ("gain", "offset", "xbinning") if _differs(self.meta.get(k), lm.get(k))]
+        return self, notes
+
     def warnings_for(self, frame: Frame) -> list[str]:
-        w: list[str] = []
-        if self.data.shape != frame.data.shape:
-            w.append(f"shape {self.data.shape} != light {frame.data.shape} "
-                     "-- bias will be skipped")
-            return w
-        bm, lm = self.meta, _meta(frame)
-        if bm["gain"] is not None and lm["gain"] is not None and bm["gain"] != lm["gain"]:
-            w.append(f"gain {bm['gain']} != light {lm['gain']}")
-        if bm["xbinning"] is not None and lm["xbinning"] is not None \
-                and bm["xbinning"] != lm["xbinning"]:
-            w.append(f"binning {bm['xbinning']} != light {lm['xbinning']}")
-        return w
+        return self.for_frame(frame)[1]
 
     def subtract(self, data: np.ndarray) -> np.ndarray:
         if self.data.shape != data.shape:
@@ -108,13 +148,26 @@ class MasterBias:
         return data - self.data
 
 
+def _baseline_removed(dark: np.ndarray, bias: "MasterBias | None", meta: dict) -> bool:
+    """Has the camera's baseline (bias level) already been taken out of this dark?
+    Such a dark sits near zero, instead of at about the bias level or above."""
+    level = float(np.median(dark[::4, ::4]))
+    if bias is not None and bias.data.shape == dark.shape and bias.level > 50:
+        return level < 0.5 * bias.level
+    # with no bias to compare to: a camera's counts don't sit this close to zero
+    # (raw files are excluded: their black level is removed as they are read,
+    # from lights and darks alike)
+    return not meta.get("raw") and level < BASELINE_FLOOR
+
+
 class MasterDark:
     def __init__(self, data: np.ndarray, meta: dict, source: str,
-                 debiased: bool = False):
+                 debiased: bool = False, baseline_removed: bool = False):
         self.data = data.astype(np.float32)
         self.meta = meta
         self.source = source
         self.debiased = debiased   # True -> `data` is pure dark current
+        self.baseline_removed = baseline_removed   # ... and it arrived that way
 
     # -- construction ---------------------------------------------------
 
@@ -122,42 +175,227 @@ class MasterDark:
     def build(cls, path: str | Path,
               bias: "MasterBias | None" = None) -> "MasterDark":
         data, meta, label = _combine(path)
-        debiased = False
-        if bias is not None and bias.data.shape == data.shape:
+        return cls.from_data(data, meta, label, bias)
+
+    @classmethod
+    def from_data(cls, data: np.ndarray, meta: dict, label: str,
+                  bias: "MasterBias | None" = None) -> "MasterDark":
+        removed = _baseline_removed(data, bias, meta)
+        debiased = removed
+        if not removed and bias is not None and bias.data.shape == data.shape:
             data = data - bias.data
             debiased = True
         log.info("master dark: %s  %s%s", label, _describe(meta),
-                 "  (bias-subtracted)" if debiased else "")
-        return cls(data, meta, label, debiased)
+                 "  (baseline already removed)" if removed
+                 else "  (bias-subtracted)" if debiased else "")
+        return cls(data, meta, label, debiased, removed)
 
     # -- application --------------------------------------------------
 
-    def warnings_for(self, frame: Frame) -> list[str]:
-        w: list[str] = []
+    def _exposure_differs(self, frame: Frame) -> bool:
+        de, le = self.meta["exptime"], frame.exptime
+        return bool(de and le and abs(de - le) / le > 0.02)
+
+    def for_frame(self, frame: Frame, bias_applied: bool = True
+                  ) -> tuple["MasterDark | None", list[str]]:
+        """(this dark if it can be used on `frame`, what's wrong with using it)."""
         if self.data.shape != frame.data.shape:
-            w.append(f"shape {self.data.shape} != light {frame.data.shape} "
-                     "-- dark will be skipped")
-            return w
+            return None, [f"{_name(self.source)} is {_size(self.data.shape)} but the lights "
+                          f"are {_size(frame.data.shape)}: NOT applied"]
+        w: list[str] = []
         dm, lm = self.meta, _meta(frame)
-        if dm["gain"] is not None and lm["gain"] is not None and dm["gain"] != lm["gain"]:
-            w.append(f"gain {dm['gain']} != light {lm['gain']}")
-        if dm["exptime"] and lm["exptime"] and abs(dm["exptime"] - lm["exptime"]) / lm["exptime"] > 0.02:
-            note = "" if self.debiased else " (approximate: no bias frame)"
-            w.append(f"exposure {dm['exptime']}s != light {lm['exptime']}s "
-                     f"-- scaling dark by the ratio{note}")
+        for k in ("gain", "offset", "xbinning"):
+            if _differs(dm.get(k), lm.get(k)):
+                w.append(f"{k} {dm[k]} != light {lm[k]}")
+        if self._exposure_differs(frame):
+            how = ("scaled by the exposure ratio" if self.debiased else
+                   "used as it is: without a matching bias its baseline can't be separated "
+                   "from the dark current, so it can't be scaled")
+            w.append(f"exposure {dm['exptime']}s != light {lm['exptime']}s: {how}")
         if dm["temp"] is not None and lm["temp"] is not None and abs(dm["temp"] - lm["temp"]) > 3:
-            w.append(f"sensor temp {dm['temp']}C != light {lm['temp']}C "
-                     "-- dark current will not match")
-        return w
+            w.append(f"sensor temp {dm['temp']}C != light {lm['temp']}C: "
+                     "dark current will not match")
+        if self.baseline_removed and not bias_applied:
+            w.append("this dark has the camera's baseline already removed: add the matching "
+                     "master bias, or the baseline stays in the lights")
+        return self, w
+
+    def warnings_for(self, frame: Frame) -> list[str]:
+        return self.for_frame(frame)[1]
 
     def subtract(self, data: np.ndarray, frame: Frame) -> np.ndarray:
         if self.data.shape != data.shape:
             return data
         scale = 1.0
-        de, le = self.meta["exptime"], frame.exptime
-        if de and le and abs(de - le) / le > 0.02:
-            scale = le / de
+        # only pure dark current scales with exposure: scaling a dark that still
+        # holds the baseline would scale the baseline too
+        if self.debiased and self._exposure_differs(frame):
+            scale = frame.exptime / self.meta["exptime"]
         return data - self.data * scale
+
+
+# -- libraries: a folder holding masters for several settings ---------------
+
+def _scan(path: Path, skip_types: tuple[str, ...]) -> list[tuple[dict, list[Path]]]:
+    """Group the files under `path` by what a light must match: size, exposure,
+    gain, offset, binning and (to within a few degrees) sensor temperature."""
+    entries = []
+    for f in _frames_under(path):
+        header, shape = read_header(f)
+        entries.append((f, header, shape))
+    wanted = [e for e in entries
+              if not any(t in e[1].imagetyp.upper() for t in skip_types)]
+    groups: dict[tuple, list] = collections.defaultdict(list)
+    for f, header, shape in (wanted or entries):
+        m = _meta(header)
+        key = (shape, round(m["exptime"] or 0.0, 3), m["gain"], m["offset"], m["xbinning"])
+        groups[key].append((m["temp"], f, m))
+    out = []
+    for key, members in groups.items():
+        members.sort(key=lambda t: (t[0] is None, t[0] or 0.0))
+        cluster = [members[0]]
+        for item in members[1:]:
+            if item[0] is not None and cluster[-1][0] is not None and item[0] - cluster[-1][0] > 3:
+                out.append(cluster)
+                cluster = []
+            cluster.append(item)
+        out.append(cluster)
+    return [(dict(c[0][2], shape=read_header(c[0][1])[1]), [f for _, f, _ in c]) for c in out]
+
+
+def _settings(m: dict) -> str:
+    bits = [f"{m['exptime']:g}s" if m.get("exptime") else None,
+            f"gain {m['gain']:g}" if m.get("gain") is not None else None,
+            f"offset {m['offset']:g}" if m.get("offset") is not None else None,
+            f"{m['temp']:.0f}C" if m.get("temp") is not None else None]
+    return " ".join(b for b in bits if b)
+
+
+class _Library:
+    """A folder of masters (or of calibration subs) for several camera settings.
+    The right one is picked for each light, and combined when first needed."""
+
+    kind = ""
+    skip_types: tuple[str, ...] = ()
+
+    def __init__(self, path: Path, groups: list):
+        self.path = path
+        self.groups = groups
+        self.source = f"{path} (library of {len(groups)})"
+        self._made: dict = {}
+        self._picked: dict = {}
+
+    def _matching(self, frame: Frame, shape) -> list[int]:
+        lm = _meta(frame)
+        return [i for i, (m, _) in enumerate(self.groups)
+                if m["shape"] == shape
+                and not any(_differs(m.get(k), lm.get(k))
+                            for k in ("gain", "offset", "xbinning"))]
+
+    def _none(self, frame: Frame, shape) -> list[str]:
+        have = sorted({f"{_size(m['shape'])} {_settings({**m, 'exptime': 0, 'temp': None})}"
+                       for m, _ in self.groups})
+        return [f"no {self.kind} in {_name(str(self.path))} matches the lights "
+                f"({_size(shape)} {_settings(_meta(frame))}): NOT applied. "
+                f"It has: {'; '.join(have)}"]
+
+
+class BiasLibrary(_Library):
+    kind = "bias"
+    skip_types = ("DARK", "FLAT", "LIGHT")
+
+    def for_frame(self, frame: Frame, shape=None) -> tuple["MasterBias | None", list[str]]:
+        shape = shape or frame.data.shape
+        found = self._matching(frame, shape)
+        if not found:
+            return None, self._none(frame, shape)
+        i = min(found, key=lambda i: self.groups[i][0].get("exptime") or 0.0)
+        if i not in self._made:
+            meta, files = self.groups[i]
+            label = str(files[0]) if len(files) == 1 else f"{files[0].parent} ({len(files)} frames)"
+            data, meta_ = _combine_files(files, label)
+            log.info("master bias: %s  %s", label, _describe(meta_))
+            self._made[i] = MasterBias(data, meta_, label)
+        return self._made[i], []
+
+
+class DarkLibrary(_Library):
+    kind = "dark"
+    skip_types = ("BIAS", "OFFSET", "FLAT", "LIGHT")
+
+    def __init__(self, path: Path, groups: list, bias=None):
+        super().__init__(path, groups)
+        self.bias = bias
+
+    def _closest(self, found: list[int], frame: Frame) -> int:
+        """Nearest exposure first (as a ratio), then nearest temperature."""
+        def score(i):
+            m = self.groups[i][0]
+            exp, light = m.get("exptime") or 0.0, frame.exptime or 0.0
+            apart = abs(np.log(exp / light)) if exp > 0 and light > 0 else 99.0
+            temps = (abs(m["temp"] - frame.ccd_temp)
+                     if m.get("temp") is not None and frame.ccd_temp is not None else 0.0)
+            return (round(float(apart), 2), temps)
+        return min(found, key=score)
+
+    def for_frame(self, frame: Frame, bias_applied: bool = True
+                  ) -> tuple["MasterDark | None", list[str]]:
+        found = self._matching(frame, frame.data.shape)
+        if not found:
+            return None, self._none(frame, frame.data.shape)
+        i = self._closest(found, frame)
+        if i not in self._made:
+            meta, files = self.groups[i]
+            label = str(files[0]) if len(files) == 1 else f"{files[0].parent} ({len(files)} frames)"
+            data, meta_ = _combine_files(files, label)
+            bias = self.bias.for_frame(frame)[0] if self.bias else None
+            self._made[i] = MasterDark.from_data(data, meta_, label, bias)
+        return self._made[i].for_frame(frame, bias_applied)
+
+
+def load_bias(path: str | Path) -> "MasterBias | BiasLibrary":
+    """A bias file, a folder of bias subs, or a folder of masters for several
+    settings (the matching one is then picked per light)."""
+    path = Path(path)
+    if path.is_dir():
+        groups = _scan(path, BiasLibrary.skip_types)
+        if len(groups) > 1:
+            log.info("bias library: %s (%d sets of settings)", path, len(groups))
+            return BiasLibrary(path, groups)
+        return MasterBias.build(groups[0][1][0] if len(groups[0][1]) == 1 else path)
+    return MasterBias.build(path)
+
+
+def load_dark(path: str | Path, bias=None) -> "MasterDark | DarkLibrary":
+    """A dark file, a folder of dark subs, or a library of masters. `bias` is
+    whatever `load_bias` returned (or None)."""
+    path = Path(path)
+    if path.is_dir():
+        groups = _scan(path, DarkLibrary.skip_types)
+        if len(groups) > 1:
+            log.info("dark library: %s (%d sets of settings)", path, len(groups))
+            return DarkLibrary(path, groups, bias)
+        files = groups[0][1]
+        meta_frame = read_header(files[0])[0]
+        label = f"{files[0]}" if len(files) == 1 else f"{path} ({len(files)} frames)"
+        data, meta = _combine_files(files, label)
+    else:
+        meta_frame = read_header(path)[0]
+        data, meta, label = _combine(path)
+    if isinstance(bias, BiasLibrary):                 # pick the bias taken like this dark
+        bias = bias.for_frame(meta_frame, shape=data.shape)[0]
+    return MasterDark.from_data(data, meta, label, bias)
+
+
+def _name(label: str) -> str:
+    """A source label without its folders: what is safe to show in a browser."""
+    m = re.match(r"^(.*?)( \((?:library of )?\d+(?: frames)?\))?$", label)
+    base = re.split(r"[\\/]", m.group(1).rstrip("\\/"))[-1]
+    return base + (m.group(2) or "")
+
+
+def _size(shape) -> str:
+    return f"{shape[1]}x{shape[0]}"
 
 
 class MasterFlat:
@@ -221,10 +459,11 @@ def build_flats(path: str | Path,
 
     out: dict[str, MasterFlat] = {}
     for filt, frames in by_filter.items():
-        data = median_combine([fr.path for fr in frames])
+        data = _to_counts(median_combine([fr.path for fr in frames]), f"flat [{filt}]")
         debiased = False
-        if bias is not None and bias.data.shape == data.shape:
-            data = data - bias.data
+        use = bias.for_frame(frames[0], shape=data.shape)[0] if bias is not None else None
+        if use is not None:
+            data = data - use.data
             debiased = True
         out[filt] = MasterFlat(data, _meta(frames[0]),
                                f"{path} ({filt}, {len(frames)} frames)",
@@ -239,7 +478,9 @@ def _meta(frame: Frame) -> dict:
     return {
         "exptime": frame.exptime,
         "gain": frame.gain,
+        "offset": frame.offset,
         "xbinning": frame.xbinning,
+        "raw": frame.path.suffix.lower() in RAW_SUFFIXES if hasattr(frame.path, "suffix") else False,
         "temp": frame.ccd_temp,
     }
 
@@ -250,23 +491,34 @@ def _describe(m: dict) -> str:
 
 
 class Calibrator:
-    """Runs the enabled calibration steps on each incoming light frame."""
+    """Runs the enabled calibration steps on each incoming light frame.
 
-    def __init__(self, cfg: StackConfig, master_dark: MasterDark | None = None,
+    `master_bias` / `master_dark` may be single masters or libraries. Anything
+    wrong (a dark that doesn't fit, one that was skipped) is logged once and
+    kept in `problems`, which the web page shows; `applied` says what the latest
+    light actually got."""
+
+    def __init__(self, cfg: StackConfig, master_dark: "MasterDark | DarkLibrary | None" = None,
                  flats: dict[str, MasterFlat] | None = None,
-                 master_bias: MasterBias | None = None):
+                 master_bias: "MasterBias | BiasLibrary | None" = None):
         self.cfg = cfg
         self.master_bias = master_bias
         self.master_dark = master_dark
         self.flats = flats or {}
-        self._bias_warned = False
-        self._dark_warned = False
+        self.problems: list[str] = []
+        self.applied: dict[str, str | None] = {}
         self._flat_warned: set[str] = set()
 
     @property
     def active(self) -> bool:
         return (self.master_bias is not None or self.master_dark is not None
                 or bool(self.flats) or self.cfg.hot_pixel_enabled)
+
+    def _problem(self, what: str, message: str) -> None:
+        text = f"{what}: {message}"
+        if text not in self.problems and len(self.problems) < 20:
+            self.problems.append(text)
+            log.warning("%s", text)
 
     def _flat_for(self, frame: Frame) -> MasterFlat | None:
         if not self.flats:
@@ -279,19 +531,25 @@ class Calibrator:
 
     def apply(self, frame: Frame) -> np.ndarray:
         data = frame.data
+        if (self.master_bias is not None or self.master_dark is not None) \
+                and _is_unit_scaled(data):
+            data = data * np.float32(FULL_SCALE)      # a 0..1 light: same units as masters
+        bias = None
         if self.master_bias is not None:
-            if not self._bias_warned:
-                for msg in self.master_bias.warnings_for(frame):
-                    log.warning("master bias: %s", msg)
-                self._bias_warned = True
-            data = self.master_bias.subtract(data)
+            bias, notes = self.master_bias.for_frame(frame)
+            for msg in notes:
+                self._problem("master bias", msg)
+            self.applied["bias"] = None if bias is None else bias.source
+            if bias is not None:
+                data = bias.subtract(data)
 
         if self.master_dark is not None:
-            if not self._dark_warned:
-                for msg in self.master_dark.warnings_for(frame):
-                    log.warning("master dark: %s", msg)
-                self._dark_warned = True
-            data = self.master_dark.subtract(data, frame)
+            dark, notes = self.master_dark.for_frame(frame, bias_applied=bias is not None)
+            for msg in notes:
+                self._problem("master dark", msg)
+            self.applied["dark"] = None if dark is None else dark.source
+            if dark is not None:
+                data = dark.subtract(data, frame)
 
         flat = self._flat_for(frame)
         if flat is not None:

@@ -198,8 +198,8 @@ class Launcher:
         cal_first = r
 
         cal_rows = (
-            ("bias", "Master bias", "a folder of bias subs, or one master FITS — also subtracted from the dark and flats"),
-            ("dark", "Master dark", "a folder of dark subs (any filters), or one master FITS"),
+            ("bias", "Master bias", "bias subs, one master, or a folder of masters (the matching one is picked) — also used on the dark and flats"),
+            ("dark", "Master dark", "dark subs, one master, or a library folder: the dark matching each sub's exposure, gain and offset is picked"),
             ("flat", "Master flat", "a folder of flat subs for every filter — sorted by FILTER, one master per channel"),
         )
         for key, label, hint in cal_rows:
@@ -286,6 +286,7 @@ class Launcher:
                            background="#111418", foreground="#cdd3dd",
                            insertbackground="#cdd3dd")
         self.log.grid(row=r, column=0, columnspan=3, sticky="nsew", padx=8, pady=(4, 0))
+        self.log.tag_configure("warn", foreground="#f0c060")     # warnings stand out
         sb = ttk.Scrollbar(frm, command=self.log.yview)
         sb.grid(row=r, column=3, sticky="ns")
         self.log["yscrollcommand"] = sb.set
@@ -428,7 +429,8 @@ class Launcher:
 
     def _append(self, text: str) -> None:
         self.log["state"] = "normal"
-        self.log.insert("end", text)
+        tag = ("warn",) if " WARNING " in text or text.startswith("error:") else ()
+        self.log.insert("end", text, tag)
         self.log.see("end")
         self.log["state"] = "disabled"
 

@@ -195,7 +195,8 @@ def test_browser_is_sent_file_names_not_paths():
     assert _public_name("C:\\Users\\dave\\bias.fits") == "bias.fits"
     assert _public_name("/a/b/c/") == "c"
     cal = NS(master_bias=NS(source="/Users/dave/x/bias (6 frames)"),
-             master_dark=NS(source="C:\\Users\\dave\\dark (9 frames)"), flats={})
+             master_dark=NS(source="C:\\Users\\dave\\dark (9 frames)"), flats={},
+             applied={}, problems=[])
     p = Pipeline(CFG, calibrator=cal)
     st = p.status()["calibration"]
     assert st["bias"] == "bias (6 frames)" and st["dark"] == "dark (9 frames)"

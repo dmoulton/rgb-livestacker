@@ -64,6 +64,9 @@ class StackConfig:
     # into "walking noise" as the mount dithers).
     hot_pixel_enabled: bool = True
     hot_pixel_sigma: float = 8.0
+    # Bring each sub's sky level to the stack's before adding it (the sky drifts
+    # over a night).
+    sky_match_enabled: bool = True
     # Rolling per-pixel sigma-clip rejection in the running stack (rejects
     # satellite / aircraft trails and cosmics that land in one frame).
     sigma_clip_enabled: bool = True

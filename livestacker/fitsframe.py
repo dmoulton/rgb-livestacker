@@ -28,6 +28,7 @@ class Frame:
     imagetyp: str = ""   # IMAGETYP keyword, e.g. "LIGHT" / "DARK" ("" if absent)
     object_name: str = ""  # OBJECT keyword: the target's name ("" if absent)
     bayer: str | None = None  # colour sensor: the mosaic's 2x2 layout ("RGGB", ...); None = mono
+    offset: float | None = None  # OFFSET keyword: the camera's baseline setting
 
 
 # Map common filter-name spellings onto single-letter RGB channels. Anything
@@ -109,6 +110,7 @@ def _frame_from(path: Path, header, data: np.ndarray) -> Frame:
         ccd_temp=_num("CCD-TEMP"),
         imagetyp=str(header.get("IMAGETYP", "") or "").strip(),
         object_name=str(header.get("OBJECT", "") or "").strip(),
+        offset=_num("OFFSET"),
         bayer=_bayer_of(header) if data.ndim == 2 else None,
     )
 
