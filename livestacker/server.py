@@ -50,6 +50,13 @@ log = logging.getLogger("livestacker.server")
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
 STALLED_BYTES = 32 * 1024 * 1024      # unsent data after which a browser is skipped
+# the browser-tab / home-screen icons. Served without a login, so the login page
+# can show them too (they are the only files that are)
+ICONS = {
+    "/favicon.ico": ("favicon.ico", "image/x-icon"),
+    "/apple-touch-icon.png": ("apple-touch-icon.png", "image/png"),
+    "/apple-touch-icon-precomposed.png": ("apple-touch-icon.png", "image/png"),
+}
 SESSION_COOKIE = "ls_session"
 SESSION_HOURS = 24                    # how long a login lasts
 LOGIN_MAX_FAILS = 5                   # wrong passwords in a row before a lockout
@@ -618,8 +625,20 @@ class LiveStacker:
                 else:
                     self.send_error(405, "use GET")
 
+            def _send_icon(self, name: str, content_type: str):
+                data = (WEB_ROOT / name).read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.end_headers()
+                self.wfile.write(data)
+
             def do_GET(self):
                 path = self.path.split("?")[0]
+                if path in ICONS:
+                    self._send_icon(*ICONS[path])
+                    return
                 if not self._authorized():
                     if path in ("/", "/index.html", "/login"):
                         self._send_login()

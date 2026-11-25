@@ -302,3 +302,22 @@ def test_hidden_elements_stay_hidden():
     body = _http(web, "GET", "/")[2]
     assert b'id="signout" hidden' in body                    # off until a password says so
     assert b"[hidden] { display: none !important; }" in body
+
+
+@pytest.mark.parametrize("password", ["", "sesame"])
+def test_tab_and_home_screen_icons_are_served_without_a_login(password):
+    import io
+    from PIL import Image
+    _, web = _server(password)
+    status, headers, body = _http(web, "GET", "/favicon.ico")
+    assert status == 200 and headers["Content-Type"] == "image/x-icon"
+    assert {(16, 16), (32, 32), (48, 48)} <= set(Image.open(io.BytesIO(body)).info["sizes"])
+    for path in ("/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"):
+        status, headers, body = _http(web, "GET", path)
+        assert status == 200 and headers["Content-Type"] == "image/png"
+        assert Image.open(io.BytesIO(body)).size == (180, 180)
+    page = _http(web, "GET", "/")[2]                      # the app, or the login page
+    assert b'rel="icon" href="/favicon.ico"' in page and b"apple-touch-icon" in page
+    if password:                                          # ...and nothing else opened up
+        assert _http(web, "GET", "/snapshot.png")[0] == 401
+        assert _http(web, "GET", "/favicon.ico/../index.html")[0] == 401
