@@ -209,7 +209,8 @@ balance, gamma or brightness applied; exposure, ISO and time come from the EXIF.
    the Ha stack minus the stars (scaled from the measured Ha/R star-flux ratio)
    is added into red, so the nebula's emission is boosted without brightening
    stars. It only ever adds red: where a dark cloud makes that difference negative,
-   it is lifted back to zero (so the Horsehead doesn't turn teal). Strength 1 puts the brightest Ha at about half-scale in red, whatever
+   it is lifted back to zero (so the Horsehead doesn't turn teal). Strength 1
+   puts the brightest Ha at about half-scale in red, whatever
    the Ha exposure time. It is per browser, like the other display settings, and an **Include
    narrowband** checkbox next to it switches back to RGB only.
    With only luminance frames (no colour yet) the L stack is shown as a
@@ -225,17 +226,6 @@ balance, gamma or brightness applied; exposure, ISO and time come from the EXIF.
    PixInsight / NINA: black just below the sky, midtones set so the sky shows at
    the **Auto stretch strength** (default 0.20). Lower it to keep bright cores
    gentler; raise it to lift faint nebulosity. Each browser has its own.
-
-### Colour noise reduction
-
-A per-browser slider (0 = off, the default; the saved PNG follows it). It smooths
-coloured speckle while leaving brightness detail and bright stars' colours alone,
-which matters most early in a session and with a colour camera. In tests on real
-data, full strength removed 82-92% of sky colour speckle (about half that on
-luminance (LRGB) images, whose colour is already smoothed), at the cost of some
-colour variety in the faintest stars. The cleaned copy is made once per stack
-update (about a second at 8 MP), only when a browser asks for it, and is shared
-by all of them.
 
 ## Tests
 

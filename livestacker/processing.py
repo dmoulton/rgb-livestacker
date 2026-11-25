@@ -493,61 +493,6 @@ def apply_luminance(rgb: np.ndarray, lum: np.ndarray, blend: float,
     return np.clip(out, 0.0, None).astype(np.float32)
 
 
-# -- colour noise reduction --------------------------------------------
-
-CHROMA_BLUR_PX = 3.0
-
-
-def _protected_blur(plane: np.ndarray, protect: np.ndarray, sigma: float) -> np.ndarray:
-    """Blur `plane`, except that where `protect` is 1 (stars, bright detail) the
-    value is neither blurred nor allowed to bleed into its surroundings."""
-    weight = 1.0 - protect
-    num = gaussian_filter(plane * weight, sigma, truncate=3.0)
-    den = gaussian_filter(weight, sigma, truncate=3.0)
-    return protect * plane + weight * (num / np.maximum(den, 1e-4))
-
-
-def _ramp(x: np.ndarray, lo: float, hi: float) -> np.ndarray:
-    """0 below `lo`, 1 above `hi`, smooth in between."""
-    t = np.clip((x - lo) / (hi - lo), 0.0, 1.0)
-    return (t * t * (3.0 - 2.0 * t)).astype(np.float32)
-
-
-def reduce_colour_noise(rgb: np.ndarray, pedestal: float) -> np.ndarray:
-    """A copy of the linear image with its colour speckle smoothed away and its
-    brightness detail left alone.
-
-    Works on an asinh-compressed copy, where the noise is about as big in the sky
-    as in bright areas (and which converts back exactly): each pixel's colour —
-    its channels' differences from their mean — is blurred, while the mean is
-    untouched. Pixels well above the sky (about 5 to 16 noise sigmas) keep their
-    own colour and don't spread it, so bright stars neither fade nor get halos."""
-    sigma = pedestal / SKY_PEDESTAL_SIGMAS
-    if sigma <= 0:
-        return rgb
-    soft = 3.0 * sigma
-    y = np.arcsinh((rgb - pedestal) / soft).astype(np.float32)
-    mean = y.mean(axis=-1)
-    protect = _ramp(gaussian_filter(mean, 1.0), 1.2, 2.4)
-    for i in range(3):
-        y[..., i] = _protected_blur(y[..., i] - mean, protect, CHROMA_BLUR_PX)
-    y -= y.mean(axis=-1, keepdims=True)           # colour only: adds no brightness
-    y += mean[..., None]
-    out = np.clip(np.sinh(y) * soft + pedestal, 0.0, None).astype(np.float32)
-    out[rgb.max(axis=-1) == 0] = 0.0              # the border stays black
-    return out
-
-
-def reduce_ha_noise(ha: np.ndarray) -> np.ndarray:
-    """The Ha layer is added to red alone, so its noise shows as red speckle: it
-    is smoothed the same way, leaving bright Ha detail sharp."""
-    sigma = _noise(ha[::3, ::3])
-    if sigma <= 0:
-        return ha
-    protect = _ramp(np.abs(gaussian_filter(ha, 1.0)), 2.0 * sigma, 6.0 * sigma)
-    return _protected_blur(ha, protect, CHROMA_BLUR_PX).astype(np.float32)
-
-
 def add_ha(rgb: np.ndarray, ha: np.ndarray, strength: float) -> np.ndarray:
     """Add the Ha emission layer into the red channel at `strength`."""
     out = rgb.copy()
