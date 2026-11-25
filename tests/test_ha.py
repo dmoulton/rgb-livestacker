@@ -88,3 +88,44 @@ def test_ha_is_available_from_the_first_ha_sub():
     ch = _channels()
     ch["H"] = (ch["H"][0], ch["H"][1], 1)
     assert combine(ch, CFG).ha is not None
+
+
+# -- dark clouds must not turn teal ---------------------------------------------
+
+def _residual(seed=0, noise=1.0):
+    """A continuum-subtracted Ha layer: sky noise, a dark cloud where it comes out
+    well below zero, and glowing nebula right next to it."""
+    rng = np.random.default_rng(seed)
+    r = rng.normal(0, noise, (200, 300)).astype(np.float32)
+    cloud = np.zeros(r.shape, bool)
+    cloud[60:140, 40:120] = True
+    glow = np.zeros(r.shape, bool)
+    glow[60:140, 120:180] = True
+    r[cloud] -= 4.0 * noise
+    r[glow] += 20.0 * noise
+    return r, cloud, glow
+
+
+def test_ha_never_removes_red_from_a_dark_cloud():
+    from livestacker.processing import lift_ha_deficit
+    resid, cloud, glow = _residual()
+    out = lift_ha_deficit(resid, np.ones(resid.shape, bool))
+    assert resid[cloud].mean() < -3.5
+    assert abs(out[cloud].mean()) < 0.25                       # lifted to neutral
+    inner_edge = (slice(70, 130), slice(114, 120))             # right beside the glow
+    assert out[inner_edge].mean() > -1.0                       # no teal rim (was -4)
+    assert abs(out[glow].mean() - resid[glow].mean()) < 0.05   # nebula untouched
+
+
+def test_ha_fix_does_not_tint_the_plain_sky_red():
+    from livestacker.processing import lift_ha_deficit
+    resid, _, _ = _residual()
+    out = lift_ha_deficit(resid, np.ones(resid.shape, bool))
+    sky = (slice(150, 200), slice(0, 300))
+    assert abs(out[sky].mean() - resid[sky].mean()) < 0.1      # clipping would add 0.4
+    assert abs(out[sky].std() - resid[sky].std()) < 0.05       # noise stays two-sided
+    assert (out[sky] < 0).mean() > 0.4
+    # the uncovered border stays exactly zero
+    cover = np.ones(resid.shape, bool)
+    cover[:, :10] = False
+    assert not lift_ha_deficit(resid, cover)[:, :10].any()

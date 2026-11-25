@@ -145,6 +145,10 @@
       <label for="green">Green noise (SCNR) <span id="green-v">0.00</span></label>
       <input type="range" id="green" min="0" max="1" step="0.02" value="0">
     </div>
+    <div class="ctl" id="colour_nr-ctl" hidden>
+      <label for="colour_nr">Colour noise reduction <span id="colour_nr-v">0.00</span></label>
+      <input type="range" id="colour_nr" min="0" max="1" step="0.05" value="0">
+    </div>
     <div class="ctl" id="lum-ctl" hidden>
       <label for="lum">Luminance (LRGB) <span id="lum-v">1.00</span></label>
       <input type="range" id="lum" min="0" max="1" step="0.02" value="1">
@@ -182,7 +186,8 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const sliders = ["strength", "black", "midtones", "gamma", "contrast", "green", "lum", "ha"];
+const sliders = ["strength", "black", "midtones", "gamma", "contrast", "green", "colour_nr",
+                 "lum", "ha"];
 
 /* The useful black-point and midtones values sit close to zero (a sky at 0.004,
    midtones of 0.002), so those two sliders are not linear: the black point
@@ -234,6 +239,7 @@ function currentParams() {
     green: parseFloat($("green").value),
     lum: parseFloat($("lum").value),
     ha: parseFloat($("ha").value),
+    colour_nr: parseFloat($("colour_nr").value),
     narrowband: $("nb").checked,
     full: view.full,
   };
@@ -301,6 +307,7 @@ function reflectValues() {
   $("green-v").textContent = (+$("green").value).toFixed(2);
   $("lum-v").textContent = (+$("lum").value).toFixed(2);
   $("ha-v").textContent = (+$("ha").value).toFixed(2);
+  $("colour_nr-v").textContent = (+$("colour_nr").value).toFixed(2);
   $("ha").disabled = !$("nb").checked;
   const dim = $("auto").checked;
   $("black").disabled = dim;
@@ -336,6 +343,8 @@ function renderStatus(s) {
   $("object").hidden = !object;
   document.title = object ? `${object} — WebStacker` : "WebStacker";
   $("signout").hidden = !s.auth;          // only when a password is set
+  // nothing to clean in a luminance-only (grey) picture
+  $("colour_nr-ctl").hidden = !["R", "G", "B"].some((c) => c in s.channels);
   $("lum-ctl").hidden = !s.luminance;
   $("ha-ctl").hidden = !s.ha;
   if (s.calibration) {

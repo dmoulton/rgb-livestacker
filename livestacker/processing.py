@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.ndimage import binary_dilation, binary_erosion
+from scipy.ndimage import binary_dilation, binary_erosion, gaussian_filter
 
 from astropy.stats import SigmaClip, sigma_clipped_stats
 from photutils.aperture import CircularAperture, aperture_photometry
@@ -273,6 +273,26 @@ WHITE_PERCENTILE = 99.999
 SKY_PEDESTAL_SIGMAS = 6.0
 
 
+def lift_ha_deficit(resid: np.ndarray, cover: np.ndarray,
+                    scales: tuple[float, ...] = (4.0, 1.5)) -> np.ndarray:
+    """Make the continuum-subtracted Ha layer incapable of *removing* red.
+
+    Where a dark cloud (the Horsehead) blocks the light, `Ha - k * R` comes out
+    below zero, and adding that to red turns the cloud teal. Simply clipping the
+    layer at zero is no good: it would keep only the positive half of the sky
+    noise and tint the whole background red. So only the *local average* is
+    lifted: wherever it is below zero it is brought up to zero, and the noise
+    around it is left symmetrical. Bright pixels are capped (at 2 sigma) while
+    taking that average, so glowing nebula beside a dark cloud doesn't hide the
+    cloud's edge, and the average is taken at two widths (the finer one follows a
+    sharp edge more closely)."""
+    resid = (resid * cover).astype(np.float32)
+    sigma = _noise(resid[::3, ::3][cover[::3, ::3]])
+    capped = np.minimum(resid, 2.0 * sigma) if sigma > 0 else resid
+    local = np.minimum.reduce([gaussian_filter(capped, k, truncate=3.0) for k in scales])
+    return ((resid - np.minimum(local, 0.0)) * cover).astype(np.float32)
+
+
 def _noise(values: np.ndarray) -> float:
     """Robust standard deviation (from the median absolute deviation)."""
     if values.size == 0:
@@ -373,7 +393,7 @@ def combine(
         if sample.size:
             # the two skies rarely cancel exactly: re-zero on the median
             resid = resid - np.median(sample)
-        resid = resid * h_cover
+        resid = lift_ha_deficit(resid, h_cover)
         top = resid[::3, ::3][h_cover[::3, ::3]]
         peak = float(np.percentile(top, 99.5)) if top.size else 0.0
         if peak > 0:
@@ -443,7 +463,6 @@ def lrgb_chroma(rgb: np.ndarray, smooth: float = 2.0, floor: float = 0.02,
     image, so its colour is taken from a blurred copy — colour noise is far less
     visible than luminance noise. Where the signal is below `floor` the ratios
     fade to neutral grey instead of amplifying noise."""
-    from scipy.ndimage import gaussian_filter
     sm = np.stack([gaussian_filter(rgb[..., i], smooth, truncate=3.0)
                    for i in range(3)], axis=-1)
     if pedestal:
@@ -472,6 +491,61 @@ def apply_luminance(rgb: np.ndarray, lum: np.ndarray, blend: float,
     out = (1.0 - blend) * rgb + blend * coloured
     out = np.where(have[..., None], out, rgb)
     return np.clip(out, 0.0, None).astype(np.float32)
+
+
+# -- colour noise reduction --------------------------------------------
+
+CHROMA_BLUR_PX = 3.0
+
+
+def _protected_blur(plane: np.ndarray, protect: np.ndarray, sigma: float) -> np.ndarray:
+    """Blur `plane`, except that where `protect` is 1 (stars, bright detail) the
+    value is neither blurred nor allowed to bleed into its surroundings."""
+    weight = 1.0 - protect
+    num = gaussian_filter(plane * weight, sigma, truncate=3.0)
+    den = gaussian_filter(weight, sigma, truncate=3.0)
+    return protect * plane + weight * (num / np.maximum(den, 1e-4))
+
+
+def _ramp(x: np.ndarray, lo: float, hi: float) -> np.ndarray:
+    """0 below `lo`, 1 above `hi`, smooth in between."""
+    t = np.clip((x - lo) / (hi - lo), 0.0, 1.0)
+    return (t * t * (3.0 - 2.0 * t)).astype(np.float32)
+
+
+def reduce_colour_noise(rgb: np.ndarray, pedestal: float) -> np.ndarray:
+    """A copy of the linear image with its colour speckle smoothed away and its
+    brightness detail left alone.
+
+    Works on an asinh-compressed copy, where the noise is about as big in the sky
+    as in bright areas (and which converts back exactly): each pixel's colour —
+    its channels' differences from their mean — is blurred, while the mean is
+    untouched. Pixels well above the sky (about 5 to 16 noise sigmas) keep their
+    own colour and don't spread it, so bright stars neither fade nor get halos."""
+    sigma = pedestal / SKY_PEDESTAL_SIGMAS
+    if sigma <= 0:
+        return rgb
+    soft = 3.0 * sigma
+    y = np.arcsinh((rgb - pedestal) / soft).astype(np.float32)
+    mean = y.mean(axis=-1)
+    protect = _ramp(gaussian_filter(mean, 1.0), 1.2, 2.4)
+    for i in range(3):
+        y[..., i] = _protected_blur(y[..., i] - mean, protect, CHROMA_BLUR_PX)
+    y -= y.mean(axis=-1, keepdims=True)           # colour only: adds no brightness
+    y += mean[..., None]
+    out = np.clip(np.sinh(y) * soft + pedestal, 0.0, None).astype(np.float32)
+    out[rgb.max(axis=-1) == 0] = 0.0              # the border stays black
+    return out
+
+
+def reduce_ha_noise(ha: np.ndarray) -> np.ndarray:
+    """The Ha layer is added to red alone, so its noise shows as red speckle: it
+    is smoothed the same way, leaving bright Ha detail sharp."""
+    sigma = _noise(ha[::3, ::3])
+    if sigma <= 0:
+        return ha
+    protect = _ramp(np.abs(gaussian_filter(ha, 1.0)), 2.0 * sigma, 6.0 * sigma)
+    return _protected_blur(ha, protect, CHROMA_BLUR_PX).astype(np.float32)
 
 
 def add_ha(rgb: np.ndarray, ha: np.ndarray, strength: float) -> np.ndarray:

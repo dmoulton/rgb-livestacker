@@ -25,7 +25,7 @@ from .debayer import choose_method, debayer
 from .fitsframe import NARROWBAND_FILTERS, Frame, is_light
 from .processing import (
     SceneModeler, add_ha, apply_luminance, apply_stretch, auto_stretch, combine,
-    lrgb_chroma, midtones_for, stretch_stats,
+    lrgb_chroma, midtones_for, reduce_colour_noise, reduce_ha_noise, stretch_stats,
 )
 
 log = logging.getLogger("livestacker.pipeline")
@@ -81,6 +81,11 @@ class Pipeline:
         self._auto_params: StretchParams | None = None
         self._chroma: np.ndarray | None = None
         self._pedestal = 0.0                 # the sky level in the linear image
+        self._reference = 1.0                # a "bright" level above it (see Combined)
+        # colour-noise-reduced copies of the current image, made the first time a
+        # browser asks and shared by all of them until the stack changes
+        self._nr: tuple | None = None        # (rgb it was made from, rgb, chroma, ha)
+        self._nr_lock = threading.Lock()
         # per image ("rgb", "lrgb"): (black, sky level) for a browser's auto stretch
         self._stats: dict[str, tuple[float, float] | None] = {"rgb": None, "lrgb": None}
         self._linear_ha: np.ndarray | None = None
@@ -223,6 +228,8 @@ class Pipeline:
             self._linear_ha = ha
             self._chroma = chroma
             self._pedestal = out.pedestal
+            self._reference = out.reference
+            self._nr = None                  # (made from the previous image)
             self._stats = stats
             self._auto_params = auto_stretch(rgb) if rgb is not None else None
 
@@ -239,16 +246,38 @@ class Pipeline:
         black, sky = stats       # the strength is this browser's own choice
         return replace(params, black=black, midtones=midtones_for(sky, params.strength))
 
+    def _noise_reduced(self, rgb, lum, ha, pedestal: float, reference: float) -> tuple:
+        """(rgb, chroma, ha) with colour noise removed, for this image — computed
+        once and then reused, whichever browser or thread asks next."""
+        with self._nr_lock:
+            hit = self._nr
+            if hit is not None and hit[0] is rgb:
+                return hit[1:]
+            clean = reduce_colour_noise(rgb, pedestal)
+            chroma = None if lum is None else lrgb_chroma(
+                clean, floor=0.02 * reference, pedestal=pedestal)
+            clean_ha = None if ha is None else reduce_ha_noise(ha)
+            self._nr = (rgb, clean, chroma, clean_ha)
+            return clean, chroma, clean_ha
+
     def _render(self, params: StretchParams) -> Image.Image | None:
         with self._lock:
             # recombine() swaps in new arrays and nothing downstream writes to
             # these, so a reference is a safe snapshot — no copy needed
             rgb, lum, chroma = self._linear_rgb, self._linear_lum, self._chroma
             ha = self._linear_ha
-            pedestal = self._pedestal
+            pedestal, reference = self._pedestal, self._reference
         if rgb is None:
             return None
         eff = self._resolve_params(params)
+        if eff.colour_nr > 1e-3:
+            clean, clean_chroma, clean_ha = self._noise_reduced(
+                rgb, lum, ha, pedestal, reference)
+            amount = min(eff.colour_nr, 1.0)
+
+            def mix(a, b):                   # this browser's share of the clean copy
+                return a if a is None or b is None else a + np.float32(amount) * (b - a)
+            rgb, chroma, ha = mix(rgb, clean), mix(chroma, clean_chroma), mix(ha, clean_ha)
         if lum is not None and eff.lum > 1e-3:
             rgb = apply_luminance(rgb, lum, min(eff.lum, 1.0), chroma, pedestal)
         if ha is not None and eff.narrowband and eff.ha > 1e-3:

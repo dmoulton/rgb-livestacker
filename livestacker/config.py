@@ -114,6 +114,7 @@ class StretchParams:
     ha: float = 0.0             # Ha enhancement (when an Ha channel exists):
                                 # how much of the nebula's Ha is added to red
     narrowband: bool = True     # use narrowband channels when present; off = RGB(+L) only
+    colour_nr: float = 0.0      # colour noise reduction, 0 = off .. 1 = full
     auto: bool = True           # let the pipeline pick black/midtones each update
     strength: float = 0.20      # auto stretch strength: how bright it shows the sky
                                 # (lower keeps bright cores gentler, higher lifts faint detail)
@@ -147,5 +148,5 @@ class StretchParams:
 _LIMITS = {
     "black": (0.0, 0.98), "midtones": (0.0001, 0.99), "strength": (0.02, 0.5), "gamma": (0.1, 5.0),
     "contrast": (0.1, 4.0), "green": (0.0, 1.0), "lum": (0.0, 1.0),
-    "ha": (0.0, 3.0),
+    "ha": (0.0, 3.0), "colour_nr": (0.0, 1.0),
 }
