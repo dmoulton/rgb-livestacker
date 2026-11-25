@@ -292,3 +292,12 @@ def test_connection_cap_follows_the_viewer_limit(monkeypatch):
     finally:
         for s in idle:
             s.close()
+
+
+def test_hidden_elements_stay_hidden():
+    """The Sign out button showed with no password: a styled `button` sets
+    `display`, which beats the `hidden` attribute unless the page says otherwise."""
+    _, web = _server("")
+    body = _http(web, "GET", "/")[2]
+    assert b'id="signout" hidden' in body                    # off until a password says so
+    assert b"[hidden] { display: none !important; }" in body

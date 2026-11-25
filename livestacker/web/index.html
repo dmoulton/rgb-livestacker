@@ -10,6 +10,9 @@
     --text: #dfe4ee; --dim: #8a93a6; --accent: #5aa9ff;
   }
   * { box-sizing: border-box; }
+  /* "hidden" must win over any rule that sets display (a styled button would
+     otherwise show even while hidden) */
+  [hidden] { display: none !important; }
   html, body { margin: 0; height: 100%; }
   body {
     background: var(--bg); color: var(--text);
