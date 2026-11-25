@@ -214,9 +214,16 @@ balance, gamma or brightness applied; exposure, ISO and time come from the EXIF.
    With only luminance frames (no colour yet) the L stack is shown as a
    monochrome image, and becomes LRGB as colour subs arrive.
    Dark / flat / bias frames found in a watched tree (by `IMAGETYP`) are skipped.
-9. **Linked stretch**: one black/midtones/gamma/contrast curve through all
+9. **Brightness scale.** White sits at the very top of the data (only the
+   brightest 0.001% of pixels clip), so globular-cluster cores and galaxy nuclei
+   keep their detail instead of turning into flat white discs, and the sky rests
+   a little above black, so its noise isn't cut in half.
+10. **Linked stretch**: one black/midtones/gamma/contrast curve through all
    three channels, plus an optional green-noise (SCNR) slider, applied live in
-   the browser without re-stacking.
+   the browser without re-stacking. **Auto** works like the screen stretch in
+   PixInsight / NINA: black just below the sky, midtones set so the sky shows at
+   the **Auto stretch strength** (default 0.20). Lower it to keep bright cores
+   gentler; raise it to lift faint nebulosity. Each browser has its own.
 
 ## Tests
 

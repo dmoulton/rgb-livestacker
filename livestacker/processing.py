@@ -245,16 +245,39 @@ class SceneModeler:
 
 @dataclass
 class Combined:
-    rgb: np.ndarray | None = None      # (H, W, 3) linear, ~0..1
+    """The linear image, on a scale where 1.0 is (just about) the brightest thing
+    in it, with the sky resting a little above 0."""
+
+    rgb: np.ndarray | None = None      # (H, W, 3) linear, 0..~1
     lum: np.ndarray | None = None      # (H, W) matching L stack, NaN where uncovered
     ha: np.ndarray | None = None       # (H, W) Ha emission minus continuum, in
-                                       # red-channel units (signed, peak ~HA_PEAK)
+                                       # red-channel units (signed, to be added)
+    pedestal: float = 0.0              # the level the sky rests at (in rgb and lum)
+    reference: float = 1.0             # how far above the pedestal a "bright" level
+                                       # sits (the 99.5th percentile of the image)
 
 
-# Where the brightest Ha emission lands in display units at strength 1.0. The
-# Ha layer is normalised by its own bright end rather than by exposure / gain,
-# so the strength slider means the same thing whatever the Ha sub length was.
+# The Ha layer is normalised by its own bright end rather than by exposure / gain,
+# so the strength slider means the same thing whatever the Ha sub length was: at
+# 1.0 the brightest Ha adds this fraction of the image's `reference` level to red.
 HA_PEAK = 0.5
+
+# White is set near the very top of the data: only the brightest 0.001% of pixels
+# (star centres) clip. Setting it lower — it was once the 99.5th percentile —
+# throws away everything brighter before the stretch ever sees it, which turns a
+# globular cluster's core or a galaxy's nucleus into a flat white disc.
+WHITE_PERCENTILE = 99.999
+# The sky is lifted this many noise sigmas above black, so that its noise isn't
+# cut in half at zero (which looks gritty, loses faint outskirts, and misleads
+# the auto stretch).
+SKY_PEDESTAL_SIGMAS = 6.0
+
+
+def _noise(values: np.ndarray) -> float:
+    """Robust standard deviation (from the median absolute deviation)."""
+    if values.size == 0:
+        return 0.0
+    return float(1.4826 * np.median(np.abs(values - np.median(values))))
 
 
 def combine_rgb(
@@ -328,10 +351,11 @@ def combine(
         sky_ref = bg_valid & ~smask
 
     def flatten(name: str, img: np.ndarray, n: int) -> np.ndarray:
+        # signed: the sky ends up centred on zero and is *not* clipped there
         if do_bg:
             img = img - modeler.background(name, img, exclude, cfg, n)
             img = img - np.median(img[sky_ref])
-        return np.clip(img, 0.0, None)
+        return img
 
     proc = {name: flatten(name, img, frames[name]) for name, img in means.items()}
 
@@ -363,11 +387,14 @@ def combine(
 
     fallback = np.mean(np.stack(list(proc.values())), axis=0)
     rgb = np.stack([proc.get(c, fallback) for c in ("R", "G", "B")], axis=-1)
-    rgb *= keep[..., None]
-    norm = float(np.percentile(rgb.max(axis=-1)[keep], 99.5)) or 1.0
-    rgb = np.clip(rgb / norm, 0.0, None).astype(np.float32)
+    rgb = rgb.astype(np.float32)
+    # First express everything relative to a "reference" level, a bright but not
+    # extreme one: this keeps RGB, L and Ha comparable whatever their exposures.
+    norm = float(np.percentile(rgb.max(axis=-1)[keep], 99.5))
+    norm = norm if norm > 0 else 1.0
+    rgb /= norm
 
-    lum = None
+    lum = l_cover = None
     lch = None if mono else present.get("L")
     if lch is not None and lch[2] >= cfg.min_subs_for_background:
         l_mean = lch[0][sl].astype(np.float32)
@@ -375,10 +402,29 @@ def combine(
         l_flat = flatten("L", l_mean, lch[2])
         l_norm = float(np.percentile(l_flat[l_cover], 99.5)) if l_cover.any() else 0.0
         if l_norm > 0:
-            lum = np.where(l_cover, np.clip(l_flat / l_norm, 0.0, None), np.nan)
-            lum = lum.astype(np.float32)
+            lum = (l_flat / l_norm).astype(np.float32)
 
-    return Combined(rgb, lum, ha)
+    # Then place white at the top of the data and rest the sky above black. One
+    # mapping for everything, so L still matches RGB.
+    sky = sky_ref if sky_ref is not None else keep
+    step = (slice(None, None, 3), slice(None, None, 3))           # a sample will do
+    white = float(np.percentile(rgb.max(axis=-1)[keep], WHITE_PERCENTILE))
+    sigma = _noise(rgb[step].mean(axis=-1)[sky[step]])
+    if lum is not None:
+        white = max(white, float(np.percentile(lum[l_cover], WHITE_PERCENTILE)))
+        sigma = max(sigma, _noise(lum[step][(sky & l_cover)[step]]))
+    white = max(white, 1.0)
+    pedestal = SKY_PEDESTAL_SIGMAS * sigma
+    scale = 1.0 / (white + pedestal)
+    rgb = np.clip((rgb + pedestal) * scale, 0.0, None).astype(np.float32)
+    rgb *= keep[..., None]                                          # border: black
+    if lum is not None:
+        lum = np.where(l_cover, np.clip((lum + pedestal) * scale, 0.0, None), np.nan)
+        lum = lum.astype(np.float32)
+    if ha is not None:
+        ha = (ha * scale).astype(np.float32)      # an increment: no pedestal
+
+    return Combined(rgb, lum, ha, pedestal=pedestal * scale, reference=scale)
 
 
 # -- luminance (LRGB) -------------------------------------------------
@@ -390,7 +436,8 @@ def _luma(rgb: np.ndarray) -> np.ndarray:
     return _LUMA[0] * rgb[..., 0] + _LUMA[1] * rgb[..., 1] + _LUMA[2] * rgb[..., 2]
 
 
-def lrgb_chroma(rgb: np.ndarray, smooth: float = 2.0, floor: float = 0.02) -> np.ndarray:
+def lrgb_chroma(rgb: np.ndarray, smooth: float = 2.0, floor: float = 0.02,
+                pedestal: float = 0.0) -> np.ndarray:
     """Per-pixel colour ratios (R,G,B over luma) of a smoothed copy of `rgb`, for
     colouring a luminance layer. The RGB stack is the noisy part of an LRGB
     image, so its colour is taken from a blurred copy — colour noise is far less
@@ -399,6 +446,10 @@ def lrgb_chroma(rgb: np.ndarray, smooth: float = 2.0, floor: float = 0.02) -> np
     from scipy.ndimage import gaussian_filter
     sm = np.stack([gaussian_filter(rgb[..., i], smooth, truncate=3.0)
                    for i in range(3)], axis=-1)
+    if pedestal:
+        # colour is the signal above the sky: left in, the pedestal (equal in all
+        # three) would wash faint colour out to grey
+        sm = np.clip(sm - pedestal, 0.0, None)
     lr = _luma(sm)
     w = np.clip(lr / floor, 0.0, 1.0)[..., None]
     ratio = sm / np.maximum(lr, 1e-6)[..., None]
@@ -406,16 +457,18 @@ def lrgb_chroma(rgb: np.ndarray, smooth: float = 2.0, floor: float = 0.02) -> np
 
 
 def apply_luminance(rgb: np.ndarray, lum: np.ndarray, blend: float,
-                    chroma: np.ndarray | None = None) -> np.ndarray:
+                    chroma: np.ndarray | None = None,
+                    pedestal: float = 0.0) -> np.ndarray:
     """LRGB: out = (1 - blend) * rgb + blend * chroma * L, so blend 0 is the RGB
     image and 1 is the L stack carrying the RGB colour. `lum` may be NaN where
     the L channel has no coverage — those pixels stay RGB. `chroma` is the
     (cached) output of `lrgb_chroma`; computed here if not given.
     """
     if chroma is None:
-        chroma = lrgb_chroma(rgb)
+        chroma = lrgb_chroma(rgb, pedestal=pedestal)
     have = np.isfinite(lum)
-    coloured = chroma * np.where(have, lum, 0.0)[..., None]
+    # the sky pedestal is grey: only what is above it takes the colour
+    coloured = pedestal + chroma * (np.where(have, lum, pedestal) - pedestal)[..., None]
     out = (1.0 - blend) * rgb + blend * coloured
     out = np.where(have[..., None], out, rgb)
     return np.clip(out, 0.0, None).astype(np.float32)
@@ -438,25 +491,40 @@ def _mtf(x: np.ndarray, m: float) -> np.ndarray:
     return ((m - 1.0) * x) / ((2.0 * m - 1.0) * x - m)
 
 
-def auto_stretch(rgb: np.ndarray, target_bg: float = 0.20) -> StretchParams:
-    """Pick a black point and midtones from image statistics (linked, so from
-    the combined luminance) aiming for a given background brightness."""
-    lum = rgb.mean(axis=-1)
+SHADOWS_CLIP = 2.8       # black point: this many noise sigmas below the sky
+MIN_MIDTONES = 1e-4      # a very high dynamic range needs a very small midtones value
+
+
+def stretch_stats(rgb: np.ndarray) -> tuple[float, float] | None:
+    """What an automatic stretch needs to know about an image: (black point, where
+    the sky then sits above it, 0..1). Measured the way PixInsight's screen
+    stretch (and NINA's) does: from the median and the noise about it. None for an
+    empty image."""
+    lum = rgb[::2, ::2].mean(axis=-1)
     lum = lum[lum > 0]  # ignore the masked border
     if lum.size == 0:
-        return StretchParams()
+        return None
     med = float(np.median(lum))
-    mad = float(np.median(np.abs(lum - med))) or 1e-6
-    black = float(np.clip(med - 2.8 * mad, 0.0, 0.98))
+    black = float(np.clip(med - SHADOWS_CLIP * (_noise(lum) or 1e-6), 0.0, 0.98))
+    return black, max((med - black) / (1.0 - black), 1e-6)
 
-    shifted = max((med - black) / (1.0 - black), 1e-6)
-    # solve _mtf(shifted, m) = target_bg for m
-    m = (target_bg - 1.0) * shifted / (
-        (2.0 * target_bg - 1.0) * shifted - target_bg
-    )
-    midtones = float(np.clip(m, 0.01, 0.99))
-    return StretchParams(black=black, midtones=midtones, gamma=1.0,
-                         contrast=1.0, auto=True)
+
+def midtones_for(sky: float, target_bg: float) -> float:
+    """The midtones value that shows a sky at level `sky` as `target_bg` (solves
+    _mtf(sky, m) = target_bg for m)."""
+    m = (target_bg - 1.0) * sky / ((2.0 * target_bg - 1.0) * sky - target_bg)
+    return float(np.clip(m, MIN_MIDTONES, 0.99))
+
+
+def auto_stretch(rgb: np.ndarray, target_bg: float = 0.20) -> StretchParams:
+    """Pick a black point and midtones from image statistics (linked, so from the
+    combined luminance) that show the sky at `target_bg` brightness."""
+    stats = stretch_stats(rgb)
+    if stats is None:
+        return StretchParams()
+    black, sky = stats
+    return StretchParams(black=black, midtones=midtones_for(sky, target_bg),
+                         gamma=1.0, contrast=1.0, auto=True, strength=target_bg)
 
 
 def _scnr_green(x: np.ndarray, amount: float) -> np.ndarray:

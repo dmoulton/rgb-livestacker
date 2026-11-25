@@ -122,12 +122,16 @@
       <label for="auto">Auto black &amp; midtones</label>
     </div>
     <div class="ctl">
-      <label for="black">Black point <span id="black-v">0.000</span></label>
-      <input type="range" id="black" min="0" max="0.6" step="0.001" value="0">
+      <label for="strength">Auto stretch strength <span id="strength-v">0.20</span></label>
+      <input type="range" id="strength" min="0.02" max="0.5" step="0.01" value="0.2">
     </div>
     <div class="ctl">
-      <label for="midtones">Midtones <span id="midtones-v">0.500</span></label>
-      <input type="range" id="midtones" min="0.01" max="0.99" step="0.005" value="0.5">
+      <label for="black">Black point <span id="black-v">0.0000</span></label>
+      <input type="range" id="black" min="0" max="1" step="0.001" value="0">
+    </div>
+    <div class="ctl">
+      <label for="midtones">Midtones <span id="midtones-v">0.5000</span></label>
+      <input type="range" id="midtones" min="0" max="1" step="0.001" value="0.926">
     </div>
     <div class="ctl">
       <label for="gamma">Gamma <span id="gamma-v">1.00</span></label>
@@ -178,7 +182,39 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const sliders = ["black", "midtones", "gamma", "contrast", "green", "lum", "ha"];
+const sliders = ["strength", "black", "midtones", "gamma", "contrast", "green", "lum", "ha"];
+
+/* The useful black-point and midtones values sit close to zero (a sky at 0.004,
+   midtones of 0.002), so those two sliders are not linear: the black point
+   follows a cube curve and midtones a logarithmic one. The slider holds a
+   position 0..1; everything else deals in the real values. */
+const MID_LO = Math.log10(0.0001), MID_HI = Math.log10(0.99);
+const SCALES = {
+  black: { value: (x) => 0.6 * x ** 3, position: (v) => Math.cbrt(v / 0.6) },
+  midtones: {
+    value: (x) => 10 ** (MID_LO + x * (MID_HI - MID_LO)),
+    position: (v) => (Math.log10(Math.max(v, 0.0001)) - MID_LO) / (MID_HI - MID_LO),
+  },
+};
+const clamp01 = (x) => Math.min(1, Math.max(0, x));
+function getValue(id) {
+  return SCALES[id] ? SCALES[id].value(+$(id).value) : +$(id).value;
+}
+function setValue(id, v) {
+  $(id).value = SCALES[id] ? clamp01(SCALES[id].position(Math.max(v, 0))) : v;
+}
+
+// what an auto stretch needs to know about the current image, from the server
+let autoStats = null;
+function showAutoValues() {
+  if (!$("auto").checked || !autoStats) return;
+  const stats = (+$("lum").value >= 0.5 && autoStats.lrgb) || autoStats.rgb;
+  if (!stats) return;
+  const [black, sky] = stats, t = +$("strength").value;
+  // the same sum the server does: the midtones that show the sky at `strength`
+  setValue("black", black);
+  setValue("midtones", (t - 1) * sky / ((2 * t - 1) * sky - t));
+}
 let ws, reconnectTimer, lastUrl;
 const preview = $("preview"), viewport = $("viewport");
 // z: device pixels per image pixel (1 = 100%); fit: follow the window size;
@@ -190,8 +226,9 @@ function currentParams() {
   return {
     type: "params",
     auto: $("auto").checked,
-    black: parseFloat($("black").value),
-    midtones: parseFloat($("midtones").value),
+    strength: getValue("strength"),
+    black: getValue("black"),
+    midtones: getValue("midtones"),
     gamma: parseFloat($("gamma").value),
     contrast: parseFloat($("contrast").value),
     green: parseFloat($("green").value),
@@ -224,8 +261,13 @@ function restoreParams() {
 function applyParams(p) {
   if (p.auto != null) $("auto").checked = !!p.auto;
   if (p.narrowband != null) $("nb").checked = !!p.narrowband;
+  // settings saved before there was a strength slider: their black point and
+  // midtones belong to the old brightness scale, so start those from Auto again
+  const old = p.strength == null;
+  if (old) $("auto").checked = true;
   for (const id of sliders) {
-    if (p[id] != null && isFinite(p[id])) $(id).value = p[id];
+    if (old && (id === "black" || id === "midtones")) continue;
+    if (p[id] != null && isFinite(p[id])) setValue(id, p[id]);
   }
 }
 
@@ -249,9 +291,11 @@ function sendParams() {
 }
 
 function reflectValues() {
+  showAutoValues();
   updateSaveLink();
-  $("black-v").textContent = (+$("black").value).toFixed(3);
-  $("midtones-v").textContent = (+$("midtones").value).toFixed(3);
+  $("strength-v").textContent = (+$("strength").value).toFixed(2);
+  $("black-v").textContent = getValue("black").toFixed(4);
+  $("midtones-v").textContent = getValue("midtones").toFixed(4);
   $("gamma-v").textContent = (+$("gamma").value).toFixed(2);
   $("contrast-v").textContent = (+$("contrast").value).toFixed(2);
   $("green-v").textContent = (+$("green").value).toFixed(2);
@@ -261,6 +305,7 @@ function reflectValues() {
   const dim = $("auto").checked;
   $("black").disabled = dim;
   $("midtones").disabled = dim;
+  $("strength").disabled = !dim;              // strength only steers Auto
 }
 
 sliders.forEach((id) => $(id).addEventListener("input", () => {
@@ -333,12 +378,9 @@ function renderStatus(s) {
     tr.append(th, td);
     body.appendChild(tr);
   }
-  // when Auto is on, show the numbers the server actually used
-  if ($("auto").checked && s.auto_params) {
-    $("black").value = s.auto_params.black;
-    $("midtones").value = s.auto_params.midtones;
-    reflectValues();
-  }
+  // when Auto is on, the sliders show the numbers this browser's view uses
+  autoStats = s.auto_stats || null;
+  reflectValues();
 }
 
 let pendingUrl = null;

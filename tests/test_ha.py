@@ -4,7 +4,7 @@ import numpy as np
 
 from livestacker.config import StackConfig, StretchParams
 from livestacker.pipeline import Pipeline
-from livestacker.processing import combine
+from livestacker.processing import HA_PEAK, combine
 
 STARS = [(30, 40), (70, 110), (95, 55), (45, 130), (60, 80), (20, 100), (105, 140),
          (85, 20), (15, 15), (110, 90), (50, 60), (35, 145)]
@@ -45,7 +45,8 @@ def test_ha_layer_keeps_the_nebula_and_cancels_the_stars():
     # (a star sitting on the nebula legitimately has nebula under it)
     stars = np.array([ha[y, x] for y, x in STARS
                       if np.hypot(y - BLOB[0], x - BLOB[1]) > 25])
-    assert blob > 0.4                                   # nebula sits near HA_PEAK
+    # nebula sits near HA_PEAK of the image's reference level
+    assert blob > 0.8 * HA_PEAK * out.reference
     assert np.abs(stars).max() < 0.25 * blob            # continuum stars cancelled
 
 

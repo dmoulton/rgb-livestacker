@@ -11,7 +11,7 @@ import logging
 import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import astroalign as aa
@@ -25,7 +25,7 @@ from .debayer import choose_method, debayer
 from .fitsframe import NARROWBAND_FILTERS, Frame, is_light
 from .processing import (
     SceneModeler, add_ha, apply_luminance, apply_stretch, auto_stretch, combine,
-    lrgb_chroma,
+    lrgb_chroma, midtones_for, stretch_stats,
 )
 
 log = logging.getLogger("livestacker.pipeline")
@@ -79,8 +79,10 @@ class Pipeline:
         self._linear_rgb: np.ndarray | None = None
         self._linear_lum: np.ndarray | None = None
         self._auto_params: StretchParams | None = None
-        self._auto_params_lrgb: StretchParams | None = None   # stretch of the L-carrying image
         self._chroma: np.ndarray | None = None
+        self._pedestal = 0.0                 # the sky level in the linear image
+        # per image ("rgb", "lrgb"): (black, sky level) for a browser's auto stretch
+        self._stats: dict[str, tuple[float, float] | None] = {"rgb": None, "lrgb": None}
         self._linear_ha: np.ndarray | None = None
         self._scene = SceneModeler()
         self._lock = threading.Lock()
@@ -207,36 +209,35 @@ class Pipeline:
                 for name, st in self.channels.items()}
         out = combine(data, self.cfg, self._scene)
         rgb, lum, ha = out.rgb, out.lum, out.ha
-        chroma = auto_lrgb = None
+        chroma = None
+        stats = {"rgb": None if rgb is None else stretch_stats(rgb), "lrgb": None}
         if rgb is not None and lum is not None:
-            chroma = lrgb_chroma(rgb)
+            chroma = lrgb_chroma(rgb, floor=0.02 * out.reference, pedestal=out.pedestal)
             # the L-carrying image has a different brightness distribution, so
             # Auto needs its own black point / midtones when L is shown
-            auto_lrgb = auto_stretch(apply_luminance(rgb, lum, 1.0, chroma))
+            stats["lrgb"] = stretch_stats(
+                apply_luminance(rgb, lum, 1.0, chroma, out.pedestal))
         with self._lock:
             self._linear_rgb = rgb
             self._linear_lum = lum
             self._linear_ha = ha
             self._chroma = chroma
+            self._pedestal = out.pedestal
+            self._stats = stats
             self._auto_params = auto_stretch(rgb) if rgb is not None else None
-            self._auto_params_lrgb = auto_lrgb
 
     # -- rendering -------------------------------------------------------
 
     def _resolve_params(self, params: StretchParams) -> StretchParams:
-        if params.auto and self._auto_params is not None:
-            base = self._auto_params
-            if params.lum >= 0.5 and self._auto_params_lrgb is not None:
-                base = self._auto_params_lrgb
-            merged = StretchParams(**base.to_json())
-            merged.gamma = params.gamma
-            merged.contrast = params.contrast
-            merged.green = params.green
-            merged.lum = params.lum
-            merged.ha = params.ha
-            merged.narrowband = params.narrowband
-            return merged
-        return params
+        if not params.auto:
+            return params
+        stats = self._stats["rgb"]
+        if params.lum >= 0.5 and self._stats["lrgb"] is not None:
+            stats = self._stats["lrgb"]
+        if stats is None:
+            return params
+        black, sky = stats       # the strength is this browser's own choice
+        return replace(params, black=black, midtones=midtones_for(sky, params.strength))
 
     def _render(self, params: StretchParams) -> Image.Image | None:
         with self._lock:
@@ -244,11 +245,12 @@ class Pipeline:
             # these, so a reference is a safe snapshot — no copy needed
             rgb, lum, chroma = self._linear_rgb, self._linear_lum, self._chroma
             ha = self._linear_ha
+            pedestal = self._pedestal
         if rgb is None:
             return None
         eff = self._resolve_params(params)
         if lum is not None and eff.lum > 1e-3:
-            rgb = apply_luminance(rgb, lum, min(eff.lum, 1.0), chroma)
+            rgb = apply_luminance(rgb, lum, min(eff.lum, 1.0), chroma, pedestal)
         if ha is not None and eff.narrowband and eff.ha > 1e-3:
             rgb = add_ha(rgb, ha, eff.ha)
         return Image.fromarray(apply_stretch(rgb, eff), mode="RGB")
@@ -323,4 +325,7 @@ class Pipeline:
             "rejected": self.rejected,
             "elapsed": round(time.time() - self.started_at, 1),
             "auto_params": self._auto_params.to_json() if self._auto_params else None,
+            # (black, sky) per image, so a page can show the numbers its own
+            # strength setting leads to
+            "auto_stats": self._stats,
         }
